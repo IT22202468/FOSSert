@@ -2,12 +2,12 @@ import { Box, Card, CardContent, Typography } from "@mui/material";
 import type { Batch } from "../types";
 
 const items = [
-  ["TOTAL", "Total recipients", "#E2E8F0"],
-  ["PENDING", "Pending", "#94A3B8"],
-  ["SENDING", "Sending", "#38BDF8"],
-  ["SENT", "Sent", "#4ADE80"],
-  ["FAILED", "Failed", "#F87171"],
-  ["UNCERTAIN", "Uncertain", "#FBBF24"],
+  ["TOTAL", "Total recipients", "#111111"],
+  ["PENDING", "Pending", "#777777"],
+  ["SENDING", "Sending", "#dc2626"],
+  ["SENT", "Sent", "#16a34a"],
+  ["FAILED", "Failed", "#dc2626"],
+  ["UNCERTAIN", "Uncertain", "#d97706"],
 ] as const;
 
 export default function StatusCards({ batch }: { batch: Batch }) {

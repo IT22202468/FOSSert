@@ -13,7 +13,15 @@ Event Organizing Team`;
 
 const NAME_PLACEHOLDER =
   /{{\s*name\s*}}|(?<!{){\s*name\s*}(?!})/g;
+const CERT_ID_PLACEHOLDER =
+  /{{\s*(?:certificate_id|certificate_code)\s*}}|(?<!{){\s*(?:certificate_id|certificate_code)\s*}(?!})/g;
 
-export function renderEmailTemplate(template: string, name: string) {
-  return template.replace(NAME_PLACEHOLDER, name);
+export function renderEmailTemplate(
+  template: string,
+  name: string,
+  certificateCode = "FOSS-2026-SAMPLE-0001",
+) {
+  return template
+    .replace(NAME_PLACEHOLDER, name)
+    .replace(CERT_ID_PLACEHOLDER, certificateCode);
 }

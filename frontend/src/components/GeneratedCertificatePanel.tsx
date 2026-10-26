@@ -12,6 +12,7 @@ import {
 } from "@mui/material";
 import DownloadIcon from "@mui/icons-material/Download";
 import RefreshIcon from "@mui/icons-material/Refresh";
+import { getAdminToken } from "../api";
 import type { Participant } from "../types";
 
 interface GeneratedCertificatePanelProps {
@@ -120,7 +121,7 @@ export default function GeneratedCertificatePanel({
             startIcon={<DownloadIcon />}
             href={
               selected?.filename
-                ? `/api/participants/${selected.id}/certificate?v=${encodeURIComponent(previewVersion)}`
+                ? `/api/participants/${selected.id}/certificate?v=${encodeURIComponent(previewVersion)}${getAdminToken() ? `&token=${encodeURIComponent(getAdminToken()!)}` : ""}`
                 : undefined
             }
             disabled={!selected?.filename}
@@ -181,7 +182,7 @@ export default function GeneratedCertificatePanel({
               </Box>
             ) : (
               <img
-                src={`/api/participants/${selected.id}/preview?v=${encodeURIComponent(previewVersion)}`}
+                src={`/api/participants/${selected.id}/preview?v=${encodeURIComponent(previewVersion)}${getAdminToken() ? `&token=${encodeURIComponent(getAdminToken()!)}` : ""}`}
                 alt={`Generated certificate for ${selected.name}`}
                 onLoad={() => setPreviewLoading(false)}
                 onError={() => {

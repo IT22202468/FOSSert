@@ -101,9 +101,10 @@ class GenerationManager:
                 batch.generation_current_name = row.name
                 row.generation_error = None
                 name = row.name
+                code = row.certificate_code
                 db.commit()
             try:
-                result = render_certificate(template_path, font_path, output, participant_id, name, region)
+                result = render_certificate(template_path, font_path, output, participant_id, name, region, certificate_code=code)
                 with SessionLocal() as db:
                     batch = db.get(Batch, batch_id)
                     row = db.get(Participant, participant_id)

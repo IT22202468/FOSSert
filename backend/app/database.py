@@ -1,7 +1,8 @@
+from datetime import datetime, timezone
 from pathlib import Path
 import uuid
 
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 from .config import get_settings
@@ -12,8 +13,17 @@ class Base(DeclarativeBase):
 
 
 settings = get_settings()
-connect_args = {"check_same_thread": False} if settings.database_url.startswith("sqlite") else {}
+connect_args = {"check_same_thread": False, "timeout": 30} if settings.database_url.startswith("sqlite") else {}
 engine = create_engine(settings.database_url, connect_args=connect_args)
+
+if settings.database_url.startswith("sqlite"):
+    @event.listens_for(engine, "connect")
+    def set_sqlite_pragma(dbapi_connection, connection_record):
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA busy_timeout=30000")
+        cursor.close()
+
 SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
 
 
@@ -86,6 +96,7 @@ def ensure_schema() -> None:
             "certificate_revision": "VARCHAR(36)",
         },
         "participants": {
+            "certificate_code": "VARCHAR(64)",
             "is_current_import": "BOOLEAN NOT NULL DEFAULT 1",
             "import_id": "VARCHAR(36)",
             "canonical_email": "VARCHAR(320)",
@@ -126,6 +137,28 @@ def ensure_schema() -> None:
                 connection.execute(text("UPDATE batches SET certificate_revision=:revision WHERE id=:batch_id"), {"revision": revision, "batch_id": batch_id})
             connection.execute(text("UPDATE participants SET certificate_revision=:revision WHERE batch_id=:batch_id AND certificate_path IS NOT NULL AND certificate_revision IS NULL"), {"revision": revision, "batch_id": batch_id})
         connection.execute(text("UPDATE participants SET canonical_email=lower(email) WHERE canonical_email IS NULL AND normalized_email NOT LIKE '__invalid__:%'"))
+        # Backfill unique certificate codes for existing participants
+        from .services.codes import generate_certificate_code
+        for participant_id, in connection.execute(text("SELECT id FROM participants WHERE certificate_code IS NULL")).all():
+            code = generate_certificate_code()
+            connection.execute(text("UPDATE participants SET certificate_code=:code WHERE id=:id"), {"code": code, "id": participant_id})
+        connection.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ux_participants_certificate_code ON participants(certificate_code)"))
+        # Ensure default superuser exists
+        if "admin_users" in inspect(engine).get_table_names():
+            admin_count = connection.execute(text("SELECT count(*) FROM admin_users")).scalar()
+            if not admin_count:
+                from .services.auth import hash_password
+                pw_hash, salt = hash_password(settings.superuser_password)
+                connection.execute(text(
+                    "INSERT INTO admin_users (id, username, password_hash, salt, created_at) "
+                    "VALUES (:id, :username, :hash, :salt, :now)"
+                ), {
+                    "id": str(uuid.uuid4()),
+                    "username": settings.superuser_username,
+                    "hash": pw_hash,
+                    "salt": salt,
+                    "now": datetime.now(timezone.utc),
+                })
         ensure_unique_session_names(connection)
         # Runtime files were historically stored as absolute paths. Repair only
         # paths whose old target is missing and whose basename exists in the

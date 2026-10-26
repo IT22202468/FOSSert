@@ -95,7 +95,7 @@ export default function SessionControls({ sessions, current, onCreate, onSelect,
         <DialogTitle>Create a new session</DialogTitle>
         <DialogContent>
           <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-            Give this certificate workflow a unique, friendly name. CertLoop manages its internal ID automatically.
+            Give this certificate workflow a unique, friendly name. FOSSert manages its internal ID automatically.
           </Typography>
           <TextField
             autoFocus

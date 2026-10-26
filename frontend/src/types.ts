@@ -37,6 +37,7 @@ export interface Participant {
   updated_at: string | null;
   error_reason: string | null;
   delivery_reference: string;
+  certificate_code?: string;
   previous_delivery: PreviousDelivery | null;
   attempts: DeliveryAttempt[];
 }
@@ -119,3 +120,22 @@ export interface Batch {
   participants: Participant[];
   import_counts: ImportCounts;
 }
+
+export interface CertificateVerificationResult {
+  found: boolean;
+  certificate_code: string;
+  recipient_name: string;
+  workshop_name: string;
+  issuer: string;
+  issue_date: string | null;
+  status: string;
+  verified: boolean;
+  has_pdf: boolean;
+  has_preview: boolean;
+}
+
+export interface AuthMeResponse {
+  authenticated: boolean;
+  username: string;
+}
+

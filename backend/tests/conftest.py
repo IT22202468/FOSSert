@@ -8,12 +8,13 @@ import pytest
 from PIL import ImageFont
 
 from app.config import get_settings
-from app.database import Base, engine
+from app.database import Base, engine, ensure_schema
 
 
 @pytest.fixture(autouse=True)
 def clean_database():
     settings = get_settings()
+    settings.auth_required = False
     settings.max_emails_per_day = 200
     settings.email_send_delay_seconds = 0
     settings.min_email_send_delay_seconds = 0
@@ -26,6 +27,7 @@ def clean_database():
     settings.smtp_data_timeout_seconds = 300
     Base.metadata.drop_all(engine)
     Base.metadata.create_all(engine)
+    ensure_schema()
     yield
 
 

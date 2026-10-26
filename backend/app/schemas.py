@@ -54,6 +54,7 @@ class ParticipantPatch(BaseModel):
 
 class ParticipantOut(BaseModel):
     id: str
+    certificate_code: str | None = None
     row_number: int
     name: str
     email: str
@@ -97,4 +98,10 @@ class ReconcileRequest(BaseModel):
     action: Literal["CONFIRM_SENT", "CONFIRM_NOT_SENT"]
     confirmation: str
     note: str = Field(default="", max_length=1000)
+
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
 

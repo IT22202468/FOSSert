@@ -48,6 +48,15 @@ class DeliveryManager:
                 row.error_reason = "Backend restarted while this send was in progress; verify manually before retrying"
                 if row.batch:
                     row.batch.is_paused = True
+                attempt = db.scalars(select(DeliveryAttempt).where(
+                    DeliveryAttempt.participant_id == row.id,
+                    DeliveryAttempt.outcome.is_(None),
+                ).order_by(DeliveryAttempt.id.desc())).first()
+                if attempt:
+                    attempt.outcome = "UNCERTAIN"
+                    attempt.error_code = "BACKEND_RESTART"
+                    attempt.error_reason = row.error_reason
+                    attempt.finished_at = datetime.now(timezone.utc)
             reservations = db.scalars(select(SendRecord).where(SendRecord.status == "RESERVED")).all()
             for reservation in reservations:
                 uncertain = reservation.participant_id in sending_ids
@@ -235,7 +244,11 @@ class DeliveryManager:
                 return
             name, email, key = participant.name, participant.email, participant.idempotency_key
             sender, path = batch.sender_email, Path(participant.certificate_path)
-            values = {"name": name}
+            values = {
+                "name": name,
+                "certificate_id": participant.certificate_code or "",
+                "certificate_code": participant.certificate_code or "",
+            }
             subject = render_template(batch.email_subject, values)
             body = render_template(batch.email_body, values)
         logger.info("delivery_event=profile participant=%s stage=prepare duration_ms=%s", _record_ref(participant_id), round((time.perf_counter() - attempt_started) * 1000, 1))

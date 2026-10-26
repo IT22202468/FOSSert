@@ -7,18 +7,20 @@ from datetime import datetime, timezone
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Security, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from PIL import Image, ImageFont, UnidentifiedImageError
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from .config import get_settings
 from .database import Base, SessionLocal, clean_session_name, engine, ensure_schema, get_db, normalized_session_name
-from .models import Batch, DEFAULT_EMAIL_BODY, DEFAULT_EMAIL_SUBJECT, DeliveryAttempt, DeliveryStatus, Participant, SendRecord
-from .schemas import BatchCreate, EmailConfig, ParticipantPatch, PreviewRequest, ReconcileRequest, RegionUpdate, StartSendRequest
+from .models import AdminSession, AdminUser, Batch, DEFAULT_EMAIL_BODY, DEFAULT_EMAIL_SUBJECT, DeliveryAttempt, DeliveryStatus, Participant, SendRecord
+from .schemas import BatchCreate, EmailConfig, LoginRequest, ParticipantPatch, PreviewRequest, ReconcileRequest, RegionUpdate, StartSendRequest
+from .services.auth import create_admin_session, get_current_admin, get_optional_admin, revoke_admin_session, security, verify_password
+from .services.codes import generate_certificate_code
 from .services.csv_import import csv_safe, parse_participants, resolve_columns, validate_participant
 from .services.delivery import DeliveryManager
 from .services.generation import GenerationManager
@@ -185,7 +187,7 @@ def serialize_batch(batch: Batch, include_participants: bool = True) -> dict:
             "started_at": started_at.isoformat() if started_at else None,
             "finished_at": finished_at.isoformat() if finished_at else None,
         },
-        "participants": [{"id": p.id, "row_number": p.row_number, "name": p.name, "email": p.email, "is_valid": p.is_valid, "is_excluded": p.is_excluded, "validation_error": p.validation_error, "status": p.status.value, "filename": p.filename, "certificate_current": current[p.id], "legibility_warning": p.legibility_warning, "generation_error": p.generation_error, "smtp_message_id": p.smtp_message_id, "sent_at": p.sent_at.isoformat() if p.sent_at else None, "updated_at": p.updated_at.isoformat() if p.updated_at else None, "error_reason": p.error_reason, "delivery_reference": p.idempotency_key, "previous_delivery": ({"participant_id": p.previous_delivery_id, "name": participant_by_id[p.previous_delivery_id].name, "email": participant_by_id[p.previous_delivery_id].email, "sent_at": participant_by_id[p.previous_delivery_id].sent_at.isoformat() if participant_by_id[p.previous_delivery_id].sent_at else None, "smtp_message_id": participant_by_id[p.previous_delivery_id].smtp_message_id, "filename": participant_by_id[p.previous_delivery_id].filename} if p.previous_delivery_id and p.previous_delivery_id in participant_by_id else None), "attempts": [{"attempt_number": a.attempt_number, "started_at": a.started_at.isoformat() if a.started_at else None, "finished_at": a.finished_at.isoformat() if a.finished_at else None, "outcome": a.outcome, "error_code": a.error_code, "error_reason": a.error_reason, "reconciliation_action": a.reconciliation_action, "reconciliation_note": a.reconciliation_note, "reconciled_at": a.reconciled_at.isoformat() if a.reconciled_at else None, "certificate_filename": a.certificate_filename} for a in sorted(p.attempts, key=lambda item: item.attempt_number, reverse=True)]} for p in sorted(imported, key=lambda item: item.row_number)] if include_participants else [],
+        "participants": [{"id": p.id, "certificate_code": p.certificate_code, "row_number": p.row_number, "name": p.name, "email": p.email, "is_valid": p.is_valid, "is_excluded": p.is_excluded, "validation_error": p.validation_error, "status": p.status.value, "filename": p.filename, "certificate_current": current[p.id], "legibility_warning": p.legibility_warning, "generation_error": p.generation_error, "smtp_message_id": p.smtp_message_id, "sent_at": p.sent_at.isoformat() if p.sent_at else None, "updated_at": p.updated_at.isoformat() if p.updated_at else None, "error_reason": p.error_reason, "delivery_reference": p.idempotency_key, "previous_delivery": ({"participant_id": p.previous_delivery_id, "name": participant_by_id[p.previous_delivery_id].name, "email": participant_by_id[p.previous_delivery_id].email, "sent_at": participant_by_id[p.previous_delivery_id].sent_at.isoformat() if participant_by_id[p.previous_delivery_id].sent_at else None, "smtp_message_id": participant_by_id[p.previous_delivery_id].smtp_message_id, "filename": participant_by_id[p.previous_delivery_id].filename} if p.previous_delivery_id and p.previous_delivery_id in participant_by_id else None), "attempts": [{"attempt_number": a.attempt_number, "started_at": a.started_at.isoformat() if a.started_at else None, "finished_at": a.finished_at.isoformat() if a.finished_at else None, "outcome": a.outcome, "error_code": a.error_code, "error_reason": a.error_reason, "reconciliation_action": a.reconciliation_action, "reconciliation_note": a.reconciliation_note, "reconciled_at": a.reconciled_at.isoformat() if a.reconciled_at else None, "certificate_filename": a.certificate_filename} for a in sorted(p.attempts, key=lambda item: item.attempt_number, reverse=True)]} for p in sorted(imported, key=lambda item: item.row_number)] if include_participants else [],
     }
 
 
@@ -194,7 +196,82 @@ def health():
     return {"status": "ok"}
 
 
-@app.post("/api/batches")
+@app.post("/api/auth/login")
+def login(payload: LoginRequest, db: Session = Depends(get_db)):
+    user = db.scalars(select(AdminUser).where(AdminUser.username == payload.username.strip())).first()
+    if not user or not verify_password(payload.password, user.password_hash, user.salt):
+        raise HTTPException(401, "Invalid username or password")
+    token, expires_at = create_admin_session(db, user, duration_hours=settings.auth_session_hours)
+    return {
+        "token": token,
+        "username": user.username,
+        "expires_at": expires_at.isoformat(),
+    }
+
+
+@app.post("/api/auth/logout")
+def logout(
+    credentials = Security(security),
+    db: Session = Depends(get_db),
+):
+    if credentials and getattr(credentials, "credentials", None):
+        revoke_admin_session(db, credentials.credentials.strip())
+    return {"ok": True}
+
+
+@app.get("/api/auth/me")
+def auth_me(admin: AdminUser = Depends(get_current_admin)):
+    return {"authenticated": True, "username": admin.username}
+
+
+@app.get("/api/verify/{certificate_code}")
+def verify_certificate(certificate_code: str, db: Session = Depends(get_db)):
+    clean_code = certificate_code.strip()
+    participant = db.scalars(select(Participant).where(func.lower(Participant.certificate_code) == clean_code.lower())).first()
+    if not participant:
+        raise HTTPException(404, "Certificate not found")
+
+    has_pdf = bool(participant.certificate_path and Path(participant.certificate_path).exists())
+    has_preview = bool(participant.preview_path and Path(participant.preview_path).exists())
+    issue_date = participant.sent_at or participant.updated_at
+
+    return {
+        "found": True,
+        "certificate_code": participant.certificate_code,
+        "recipient_name": participant.name,
+        "workshop_name": participant.batch.name if participant.batch else "SLIIT FOSS Workshop",
+        "issuer": "SLIIT FOSS Community",
+        "issue_date": issue_date.isoformat() if issue_date else None,
+        "status": "ISSUED" if participant.status == DeliveryStatus.SENT else ("GENERATED" if participant.filename else participant.status.value),
+        "verified": True,
+        "has_pdf": has_pdf,
+        "has_preview": has_preview,
+    }
+
+
+@app.get("/api/verify/{certificate_code}/preview")
+def verify_preview(certificate_code: str, db: Session = Depends(get_db)):
+    clean_code = certificate_code.strip()
+    participant = db.scalars(select(Participant).where(func.lower(Participant.certificate_code) == clean_code.lower())).first()
+    if not participant or not participant.preview_path or not Path(participant.preview_path).exists():
+        raise HTTPException(404, "Certificate preview not available")
+    return FileResponse(participant.preview_path, media_type="image/png")
+
+
+@app.get("/api/verify/{certificate_code}/download")
+def verify_download(certificate_code: str, db: Session = Depends(get_db)):
+    clean_code = certificate_code.strip()
+    participant = db.scalars(select(Participant).where(func.lower(Participant.certificate_code) == clean_code.lower())).first()
+    if not participant or not participant.certificate_path or not Path(participant.certificate_path).exists():
+        raise HTTPException(404, "Certificate PDF not available")
+    return FileResponse(
+        participant.certificate_path,
+        media_type="application/pdf",
+        filename=participant.filename or f"certificate-{participant.certificate_code}.pdf",
+    )
+
+
+@app.post("/api/batches", dependencies=[Depends(get_current_admin)])
 def create_batch(payload: BatchCreate, db: Session = Depends(get_db)):
     name = clean_session_name(payload.name)
     batch = Batch(
@@ -213,12 +290,12 @@ def create_batch(payload: BatchCreate, db: Session = Depends(get_db)):
     return serialize_batch(batch)
 
 
-@app.get("/api/batches")
+@app.get("/api/batches", dependencies=[Depends(get_current_admin)])
 def list_batches(db: Session = Depends(get_db)):
     return [serialize_batch(row, False) for row in db.scalars(select(Batch).order_by(Batch.created_at.desc())).all()]
 
 
-@app.get("/api/batches/{batch_id}")
+@app.get("/api/batches/{batch_id}", dependencies=[Depends(get_current_admin)])
 def get_batch(batch_id: str, db: Session = Depends(get_db)):
     return serialize_batch(batch_or_404(db, batch_id))
 
@@ -230,7 +307,7 @@ async def read_limited(file: UploadFile) -> bytes:
     return data
 
 
-@app.post("/api/batches/{batch_id}/participants/import")
+@app.post("/api/batches/{batch_id}/participants/import", dependencies=[Depends(get_current_admin)])
 async def import_csv(batch_id: str, file: UploadFile = File(...), name_column: str | None = Form(None), email_column: str | None = Form(None), confirm_replace: bool = Form(False), db: Session = Depends(get_db)):
     batch = batch_or_404(db, batch_id)
     if generation.is_running(batch_id) or batch.generation_status == "RUNNING":
@@ -283,6 +360,7 @@ async def import_csv(batch_id: str, file: UploadFile = File(...), name_column: s
                 canonical_email=row.normalized_email or None,
                 is_valid=row.is_valid, validation_error=row.error,
                 is_current_import=True, import_id=import_id,
+                certificate_code=generate_certificate_code(),
                 # A re-imported sent address is visible but cannot silently
                 # become a new pending delivery.
                 is_excluded=bool(previous),
@@ -318,7 +396,7 @@ async def import_csv(batch_id: str, file: UploadFile = File(...), name_column: s
     return result
 
 
-@app.patch("/api/participants/{participant_id}")
+@app.patch("/api/participants/{participant_id}", dependencies=[Depends(get_current_admin)])
 def update_participant(participant_id: str, payload: ParticipantPatch, db: Session = Depends(get_db)):
     row = db.get(Participant, participant_id)
     if not row: raise HTTPException(404, "Participant not found")
@@ -342,7 +420,7 @@ def update_participant(participant_id: str, payload: ParticipantPatch, db: Sessi
     return serialize_batch(row.batch)
 
 
-@app.post("/api/participants/{participant_id}/reconcile")
+@app.post("/api/participants/{participant_id}/reconcile", dependencies=[Depends(get_current_admin)])
 def reconcile_uncertain(participant_id: str, payload: ReconcileRequest, db: Session = Depends(get_db)):
     participant = db.get(Participant, participant_id)
     if not participant:
@@ -352,17 +430,33 @@ def reconcile_uncertain(participant_id: str, payload: ReconcileRequest, db: Sess
     expected = "CONFIRM SENT" if payload.action == "CONFIRM_SENT" else "CONFIRM NOT SENT"
     if payload.confirmation != expected:
         raise HTTPException(400, f"Confirmation must exactly match: {expected}")
+    now = datetime.now(timezone.utc)
     attempt = db.scalars(select(DeliveryAttempt).where(
         DeliveryAttempt.participant_id == participant.id,
-        DeliveryAttempt.outcome == "UNCERTAIN",
+        or_(DeliveryAttempt.outcome == "UNCERTAIN", DeliveryAttempt.outcome.is_(None)),
     ).order_by(DeliveryAttempt.id.desc())).first()
     if not attempt:
-        raise HTTPException(409, "No uncertain delivery attempt is available to reconcile")
+        attempt = db.scalars(select(DeliveryAttempt).where(
+            DeliveryAttempt.participant_id == participant.id,
+        ).order_by(DeliveryAttempt.id.desc())).first()
+    if not attempt:
+        attempt = DeliveryAttempt(
+            participant_id=participant.id,
+            attempt_number=1,
+            started_at=now,
+            certificate_filename=participant.filename,
+        )
+        db.add(attempt)
     record = db.scalars(select(SendRecord).where(
         SendRecord.participant_id == participant.id,
         SendRecord.status == "UNCERTAIN",
     ).order_by(SendRecord.reserved_at.desc())).first()
-    now = datetime.now(timezone.utc)
+    if not record:
+        record = db.scalars(select(SendRecord).where(
+            SendRecord.participant_id == participant.id,
+        ).order_by(SendRecord.reserved_at.desc())).first()
+    if not attempt.outcome:
+        attempt.outcome = "UNCERTAIN"
     attempt.reconciliation_action = payload.action
     attempt.reconciliation_note = payload.note.strip() or None
     attempt.reconciled_at = now
@@ -391,7 +485,7 @@ def reconcile_uncertain(participant_id: str, payload: ReconcileRequest, db: Sess
     return serialize_batch(participant.batch)
 
 
-@app.post("/api/batches/{batch_id}/template")
+@app.post("/api/batches/{batch_id}/template", dependencies=[Depends(get_current_admin)])
 async def upload_template(batch_id: str, file: UploadFile = File(...), db: Session = Depends(get_db)):
     batch = batch_or_404(db, batch_id)
     if generation.is_running(batch_id): raise HTTPException(409, "Wait for certificate generation to finish")
@@ -411,7 +505,7 @@ async def upload_template(batch_id: str, file: UploadFile = File(...), db: Sessi
     return serialize_batch(batch)
 
 
-@app.post("/api/batches/{batch_id}/font")
+@app.post("/api/batches/{batch_id}/font", dependencies=[Depends(get_current_admin)])
 async def upload_font(batch_id: str, file: UploadFile = File(...), db: Session = Depends(get_db)):
     batch = batch_or_404(db, batch_id)
     if generation.is_running(batch_id): raise HTTPException(409, "Wait for certificate generation to finish")
@@ -431,7 +525,7 @@ async def upload_font(batch_id: str, file: UploadFile = File(...), db: Session =
     return serialize_batch(batch)
 
 
-@app.post("/api/batches/{batch_id}/font/default")
+@app.post("/api/batches/{batch_id}/font/default", dependencies=[Depends(get_current_admin)])
 def use_default_font(batch_id: str, db: Session = Depends(get_db)):
     batch = batch_or_404(db, batch_id)
     if generation.is_running(batch_id):
@@ -445,7 +539,7 @@ def use_default_font(batch_id: str, db: Session = Depends(get_db)):
     return serialize_batch(batch)
 
 
-@app.get("/api/batches/{batch_id}/template-file")
+@app.get("/api/batches/{batch_id}/template-file", dependencies=[Depends(get_current_admin)])
 def template_file(batch_id: str, db: Session = Depends(get_db)):
     batch = batch_or_404(db, batch_id)
     if not batch.template_path:
@@ -454,7 +548,7 @@ def template_file(batch_id: str, db: Session = Depends(get_db)):
     return FileResponse(batch.template_path, media_type="image/png" if suffix == ".png" else "image/jpeg")
 
 
-@app.post("/api/batches/{batch_id}/render-preview")
+@app.post("/api/batches/{batch_id}/render-preview", dependencies=[Depends(get_current_admin)])
 def render_live_preview(batch_id: str, payload: PreviewRequest, db: Session = Depends(get_db)):
     batch = batch_or_404(db, batch_id)
     if not batch.template_path:
@@ -467,6 +561,7 @@ def render_live_preview(batch_id: str, payload: PreviewRequest, db: Session = De
     png, actual_size, warning = render_preview_png(
         Path(batch.template_path), resolve_font_path(batch.font_path), participant.name,
         payload.model_dump(exclude={"participant_id"}),
+        certificate_code=participant.certificate_code,
     )
     return Response(
         png,
@@ -479,7 +574,7 @@ def render_live_preview(batch_id: str, payload: PreviewRequest, db: Session = De
     )
 
 
-@app.put("/api/batches/{batch_id}/region")
+@app.put("/api/batches/{batch_id}/region", dependencies=[Depends(get_current_admin)])
 def update_region(batch_id: str, payload: RegionUpdate, db: Session = Depends(get_db)):
     if payload.x + payload.w > 1 or payload.y + payload.h > 1: raise HTTPException(422, "Name region must stay inside the image")
     batch = batch_or_404(db, batch_id)
@@ -492,7 +587,7 @@ def update_region(batch_id: str, payload: RegionUpdate, db: Session = Depends(ge
     db.commit(); return serialize_batch(batch)
 
 
-@app.post("/api/batches/{batch_id}/generate")
+@app.post("/api/batches/{batch_id}/generate", dependencies=[Depends(get_current_admin)])
 def generate(batch_id: str, db: Session = Depends(get_db)):
     batch = batch_or_404(db, batch_id)
     if not batch.template_path: raise HTTPException(409, "Upload a certificate template first")
@@ -505,7 +600,7 @@ def generate(batch_id: str, db: Session = Depends(get_db)):
     return {"started": True, "total": len(eligible)}
 
 
-@app.post("/api/batches/{batch_id}/participants/{participant_id}/generate")
+@app.post("/api/batches/{batch_id}/participants/{participant_id}/generate", dependencies=[Depends(get_current_admin)])
 def generate_participant(batch_id: str, participant_id: str, db: Session = Depends(get_db)):
     participant = db.get(Participant, participant_id)
     if not participant or participant.batch_id != batch_id or not participant.is_current_import:
@@ -522,21 +617,21 @@ def generate_participant(batch_id: str, participant_id: str, db: Session = Depen
     return {"started": True, "total": 1, "participant_id": participant.id}
 
 
-@app.get("/api/participants/{participant_id}/preview")
+@app.get("/api/participants/{participant_id}/preview", dependencies=[Depends(get_current_admin)])
 def preview(participant_id: str, db: Session = Depends(get_db)):
     row = db.get(Participant, participant_id)
     if not row or not row.preview_path: raise HTTPException(404, "Preview not generated")
     return FileResponse(row.preview_path, media_type="image/png", headers={"Cache-Control": "no-store"})
 
 
-@app.get("/api/participants/{participant_id}/certificate")
+@app.get("/api/participants/{participant_id}/certificate", dependencies=[Depends(get_current_admin)])
 def certificate(participant_id: str, db: Session = Depends(get_db)):
     row = db.get(Participant, participant_id)
     if not row or not row.certificate_path: raise HTTPException(404, "Certificate not generated")
     return FileResponse(row.certificate_path, media_type="application/pdf", filename=row.filename)
 
 
-@app.get("/api/batches/{batch_id}/zip")
+@app.get("/api/batches/{batch_id}/zip", dependencies=[Depends(get_current_admin)])
 def download_zip(batch_id: str, db: Session = Depends(get_db)):
     batch = batch_or_404(db, batch_id)
     files = [(Path(p.certificate_path), p.filename or "certificate.pdf") for p in batch.participants if p.is_current_import and p.certificate_path and not p.is_excluded and p.certificate_revision == batch.certificate_revision and is_render_current(p.certificate_path)]
@@ -545,7 +640,7 @@ def download_zip(batch_id: str, db: Session = Depends(get_db)):
     return FileResponse(path, media_type="application/zip", filename=f"{safe_filename(batch.name)}-certificates.zip")
 
 
-@app.put("/api/batches/{batch_id}/email")
+@app.put("/api/batches/{batch_id}/email", dependencies=[Depends(get_current_admin)])
 def configure_email(batch_id: str, payload: EmailConfig, db: Session = Depends(get_db)):
     batch = batch_or_404(db, batch_id)
     if str(payload.sender_email).casefold() not in allowed_senders():
@@ -554,7 +649,7 @@ def configure_email(batch_id: str, payload: EmailConfig, db: Session = Depends(g
     db.commit(); return serialize_batch(batch)
 
 
-@app.get("/api/smtp/status")
+@app.get("/api/smtp/status", dependencies=[Depends(get_current_admin)])
 def smtp_status():
     return {
         "configured": smtp_configured(),
@@ -567,12 +662,12 @@ def smtp_status():
     }
 
 
-@app.get("/api/sending-allowance")
+@app.get("/api/sending-allowance", dependencies=[Depends(get_current_admin)])
 def sending_allowance():
     return delivery.allowance()
 
 
-@app.post("/api/batches/{batch_id}/send")
+@app.post("/api/batches/{batch_id}/send", dependencies=[Depends(get_current_admin)])
 def start_send(batch_id: str, payload: StartSendRequest, db: Session = Depends(get_db)):
     batch = batch_or_404(db, batch_id)
     if delivery.is_running(batch_id):
@@ -606,17 +701,17 @@ def start_send(batch_id: str, payload: StartSendRequest, db: Session = Depends(g
     return {"started": True}
 
 
-@app.post("/api/batches/{batch_id}/pause")
+@app.post("/api/batches/{batch_id}/pause", dependencies=[Depends(get_current_admin)])
 def pause(batch_id: str, db: Session = Depends(get_db)):
     batch = batch_or_404(db, batch_id); batch.is_paused = True; db.commit(); return {"paused": True}
 
 
-@app.post("/api/batches/{batch_id}/resume")
+@app.post("/api/batches/{batch_id}/resume", dependencies=[Depends(get_current_admin)])
 def resume(batch_id: str, db: Session = Depends(get_db)):
     batch = batch_or_404(db, batch_id); batch.is_paused = False; db.commit(); delivery.start(batch.id); return {"resumed": True}
 
 
-@app.post("/api/batches/{batch_id}/retry-failed")
+@app.post("/api/batches/{batch_id}/retry-failed", dependencies=[Depends(get_current_admin)])
 def retry_failed(batch_id: str, db: Session = Depends(get_db)):
     batch = batch_or_404(db, batch_id); count = 0
     for row in batch.participants:
@@ -624,7 +719,7 @@ def retry_failed(batch_id: str, db: Session = Depends(get_db)):
     db.commit(); return {"reset": count}
 
 
-@app.get("/api/batches/{batch_id}/events")
+@app.get("/api/batches/{batch_id}/events", dependencies=[Depends(get_current_admin)])
 async def events(batch_id: str, request: Request):
     async def stream():
         previous = None
@@ -638,14 +733,14 @@ async def events(batch_id: str, request: Request):
     return StreamingResponse(stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache"})
 
 
-@app.get("/api/batches/{batch_id}/report")
+@app.get("/api/batches/{batch_id}/report", dependencies=[Depends(get_current_admin)])
 def report(batch_id: str, db: Session = Depends(get_db)):
     batch = batch_or_404(db, batch_id); buffer = io.StringIO(); writer = csv.writer(buffer)
-    writer.writerow(["Recipient", "Name", "Included", "Status", "Timestamp", "SMTP Message ID", "Delivery Reference", "Previous Delivery ID", "Last Attempt", "Reconciliation", "Error Reason"])
+    writer.writerow(["Certificate ID", "Recipient", "Name", "Included", "Status", "Timestamp", "SMTP Message ID", "Delivery Reference", "Previous Delivery ID", "Last Attempt", "Reconciliation", "Error Reason"])
     for p in sorted((row for row in batch.participants if row.is_current_import), key=lambda item: item.row_number):
         timestamp = p.sent_at or (p.updated_at if p.status != DeliveryStatus.PENDING else None)
         attempt = max(p.attempts, key=lambda item: item.attempt_number, default=None)
-        writer.writerow([csv_safe(p.email), csv_safe(p.name), "No" if p.is_excluded else "Yes", p.status.value, timestamp.isoformat() if timestamp else "", csv_safe(p.smtp_message_id), csv_safe(p.idempotency_key), csv_safe(p.previous_delivery_id), csv_safe(attempt.outcome if attempt else None), csv_safe(attempt.reconciliation_action if attempt else None), csv_safe(p.error_reason)])
+        writer.writerow([csv_safe(p.certificate_code), csv_safe(p.email), csv_safe(p.name), "No" if p.is_excluded else "Yes", p.status.value, timestamp.isoformat() if timestamp else "", csv_safe(p.smtp_message_id), csv_safe(p.idempotency_key), csv_safe(p.previous_delivery_id), csv_safe(attempt.outcome if attempt else None), csv_safe(attempt.reconciliation_action if attempt else None), csv_safe(p.error_reason)])
     data = buffer.getvalue().encode("utf-8-sig")
     return StreamingResponse(iter([data]), media_type="text/csv", headers={"Content-Disposition": f'attachment; filename="{safe_filename(batch.name)}-delivery-report.csv"'})
 

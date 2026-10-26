@@ -35,8 +35,9 @@ import RefreshIcon from "@mui/icons-material/Refresh";
 import DownloadIcon from "@mui/icons-material/Download";
 import KeyboardArrowLeftIcon from "@mui/icons-material/KeyboardArrowLeft";
 import KeyboardArrowRightIcon from "@mui/icons-material/KeyboardArrowRight";
+import LockOutlinedIcon from "@mui/icons-material/LockOutlined";
 import { Rnd } from "react-rnd";
-import { api, ApiError } from "./api";
+import { api, ApiError, getAdminToken } from "./api";
 import type { Batch, Region, Status } from "./types";
 import ParticipantTable from "./components/ParticipantTable";
 import AllowanceCards from "./components/AllowanceCards";
@@ -47,6 +48,8 @@ import StatusCards from "./components/StatusCards";
 import BrandMark from "./components/BrandMark";
 import NameStylingControls from "./components/NameStylingControls";
 import GeneratedCertificatePanel from "./components/GeneratedCertificatePanel";
+import { VerificationPortal } from "./components/VerificationPortal";
+import { AdminLoginModal } from "./components/AdminLoginModal";
 import {
   DEFAULT_EMAIL_BODY,
   DEFAULT_EMAIL_SUBJECT,
@@ -145,6 +148,31 @@ export default function App() {
     [busy, setBusy] = useState(false),
     [error, setError] = useState(""),
     [notice, setNotice] = useState("");
+  const [view, setView] = useState<"issuer" | "verify">(() => {
+    const params = new URLSearchParams(window.location.search);
+    const hash = window.location.hash;
+    if (params.has("admin") || params.get("view") === "issuer" || hash === "#admin") {
+      return "issuer";
+    }
+    return "verify";
+  });
+  const [adminUser, setAdminUser] = useState<string | null>(null);
+  const [loginModalOpen, setLoginModalOpen] = useState(false);
+  const logoClicksRef = useRef(0);
+  const logoTimerRef = useRef<number | null>(null);
+
+  const handleLogoSecretClick = () => {
+    logoClicksRef.current += 1;
+    if (logoTimerRef.current) window.clearTimeout(logoTimerRef.current);
+    if (logoClicksRef.current >= 3) {
+      logoClicksRef.current = 0;
+      setLoginModalOpen(true);
+    } else {
+      logoTimerRef.current = window.setTimeout(() => {
+        logoClicksRef.current = 0;
+      }, 1200);
+    }
+  };
   const [search, setSearch] = useState(""),
     [filter, setFilter] = useState<"ALL" | Status>("ALL"),
     [confirmOpen, setConfirmOpen] = useState(false),
@@ -194,6 +222,10 @@ export default function App() {
       done?.(result);
       return result;
     } catch (e) {
+      if (e instanceof ApiError && e.status === 401) {
+        setAdminUser(null);
+        return;
+      }
       setError(e instanceof Error ? e.message : "Unexpected error");
     } finally {
       setBusy(false);
@@ -247,21 +279,54 @@ export default function App() {
     );
   };
   useEffect(() => {
+    api
+      .authMe()
+      .then((me) => {
+        if (me?.authenticated) {
+          setAdminUser(me.username);
+        }
+      })
+      .catch(() => {
+        setAdminUser(null);
+      });
+  }, []);
+  useEffect(() => {
+    // Secret shortcut: Ctrl+Shift+A or Cmd+Shift+A
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === "A" || e.key === "a")) {
+        e.preventDefault();
+        setLoginModalOpen(true);
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, []);
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.has("admin") || window.location.hash === "#admin") {
+      if (!adminUser) {
+        setLoginModalOpen(true);
+      }
+    }
+  }, [adminUser]);
+  useEffect(() => {
     if (bootstrapStarted.current) return;
     bootstrapStarted.current = true;
     void bootstrap();
   }, []);
   useEffect(() => {
-    if (!batch) return;
+    if (!batch || !adminUser) return;
     const sessionId = batch.id;
-    const source = new EventSource(`/api/batches/${sessionId}/events`);
+    const token = getAdminToken();
+    const eventUrl = `/api/batches/${sessionId}/events${token ? `?token=${encodeURIComponent(token)}` : ""}`;
+    const source = new EventSource(eventUrl);
     source.onmessage = (e) => {
       const update = JSON.parse(e.data) as Batch;
       if (activeSessionId.current === sessionId && update.id === sessionId)
         setBatch(update);
     };
     return () => source.close();
-  }, [batch?.id]);
+  }, [batch?.id, adminUser]);
   useEffect(() => {
     api
       .smtpStatus()
@@ -428,33 +493,297 @@ export default function App() {
       ) ?? [],
     [batch, search, filter],
   );
-  if (!batch)
-    return (
-      <Box minHeight="100vh" display="grid" sx={{ placeItems: "center", p: 3 }}>
-        {error ? (
-          <Paper variant="outlined" sx={{ p: 3, maxWidth: 520 }}>
-            <Stack spacing={2}>
-              <Alert severity="error">
-                Could not reach the certificate backend: {error}
-              </Alert>
-              <Typography color="text.secondary">
-                Start FastAPI on port 8000, then retry.
+  const renderAppBar = (currentBatchName?: string) => (
+    <AppBar
+      position="sticky"
+      elevation={0}
+      sx={{
+        background: "#ffffff",
+        borderBottom: "1px solid rgba(0, 0, 0, 0.06)",
+        boxShadow: "0 2px 12px rgba(0, 0, 0, 0.02)",
+        zIndex: 1100,
+      }}
+    >
+      <Container maxWidth="xl">
+        <Toolbar disableGutters sx={{ minHeight: { xs: 68, md: 76 } }}>
+          <Box
+            sx={{
+              display: "flex",
+              alignItems: "center",
+              cursor: "pointer",
+            }}
+            onClick={() => {
+              handleLogoSecretClick();
+              setView("verify");
+            }}
+          >
+            <Box sx={{ display: { xs: "none", md: "flex" }, alignItems: "center", gap: 2 }}>
+              <BrandMark variant="horizontal" width={175} size={50} priority />
+              <Divider orientation="vertical" flexItem sx={{ my: 1.5, borderColor: "rgba(0, 0, 0, 0.08)" }} />
+              <BrandMark variant="foss" size={38} priority />
+            </Box>
+            <Box sx={{ display: { xs: "flex", md: "none" }, alignItems: "center" }}>
+              <BrandMark size={36} priority />
+              <Box sx={{ ml: 1.1 }}>
+                <Typography variant="h6" lineHeight={1.05} sx={{ color: "#111111", fontWeight: 800 }}>
+                  FOSSert
+                </Typography>
+                <Typography variant="caption" sx={{ color: "#777777", display: { xs: "none", sm: "block" } }}>
+                  SLIIT FOSS
+                </Typography>
+              </Box>
+            </Box>
+          </Box>
+
+          <Box flex={1} />
+
+          {view === "issuer" && currentBatchName && adminUser && (
+            <Box sx={{ display: { xs: "none", sm: "block" }, textAlign: "right", mr: 2 }}>
+              <Typography variant="caption" sx={{ color: "#777777" }}>Current session</Typography>
+              <Typography variant="body2" fontWeight={700} noWrap maxWidth={240} sx={{ color: "#111111" }}>
+                {currentBatchName}
               </Typography>
-              <Button variant="contained" onClick={() => void bootstrap()}>
-                Retry connection
+            </Box>
+          )}
+
+          {adminUser && (
+            <Stack direction="row" spacing={1} alignItems="center">
+              <Button
+                size="small"
+                variant="outlined"
+                onClick={() => {
+                  const nextView = view === "issuer" ? "verify" : "issuer";
+                  setView(nextView);
+                }}
+                sx={{
+                  textTransform: "none",
+                  fontWeight: 600,
+                  fontSize: "13px",
+                  borderRadius: "9999px",
+                  borderColor: "#eeeeee",
+                  color: "#111111",
+                  mr: 0.5,
+                  "&:hover": { borderColor: "#111111", backgroundColor: "rgba(0, 0, 0, 0.02)" },
+                }}
+              >
+                {view === "issuer" ? "Verification Portal" : "Admin Studio"}
+              </Button>
+              <Chip
+                size="small"
+                label={`Superuser: ${adminUser}`}
+                sx={{
+                  fontWeight: 600,
+                  display: { xs: "none", sm: "inline-flex" },
+                  backgroundColor: "#fef2f2",
+                  color: "#dc2626",
+                  border: "1px solid #fee2e2",
+                  borderRadius: "9999px",
+                }}
+              />
+              <Button
+                size="small"
+                variant="outlined"
+                onClick={async () => {
+                  await api.logout();
+                  setAdminUser(null);
+                  setView("verify");
+                  const url = new URL(window.location.href);
+                  url.searchParams.delete("admin");
+                  url.searchParams.delete("view");
+                  window.history.replaceState({}, "", url.pathname);
+                  setNotice("Signed out of admin session");
+                }}
+                sx={{
+                  textTransform: "none",
+                  fontWeight: 600,
+                  borderRadius: "9999px",
+                  borderColor: "#eeeeee",
+                  color: "#777777",
+                  "&:hover": { borderColor: "#111111", color: "#111111" },
+                }}
+              >
+                Sign Out
+              </Button>
+            </Stack>
+          )}
+        </Toolbar>
+      </Container>
+    </AppBar>
+  );
+
+  const renderFooter = () => (
+    <Box component="footer" sx={{ borderTop: "1px solid rgba(0, 0, 0, 0.06)", py: 3.5, mt: "auto", background: "#ffffff" }}>
+      <Container maxWidth="xl">
+        <Stack direction={{ xs: "column", sm: "row" }} alignItems={{ xs: "flex-start", sm: "center" }} justifyContent="space-between" spacing={1.5}>
+          <Stack direction="row" spacing={1.5} alignItems="center">
+            <BrandMark size={28} />
+            <Typography variant="body2" sx={{ color: "#777777" }}>
+              FOSSert{" "}
+              <Box
+                component="span"
+                onClick={() => setLoginModalOpen(true)}
+                sx={{ cursor: "default", userSelect: "none" }}
+                aria-hidden="true"
+              >
+                ·
+              </Box>{" "}
+              SLIIT FOSS Community Official Certificate Issuer & Verification Registry
+            </Typography>
+          </Stack>
+          <Typography variant="caption" sx={{ color: "#999999" }}>
+            Empowering students with open-source recognition
+          </Typography>
+        </Stack>
+      </Container>
+    </Box>
+  );
+
+  const loginModal = (
+    <AdminLoginModal
+      isOpen={loginModalOpen}
+      onClose={() => {
+        setLoginModalOpen(false);
+        if (!adminUser && view === "issuer") {
+          setView("verify");
+        }
+      }}
+      onSuccess={(user) => {
+        setAdminUser(user);
+        setView("issuer");
+        setLoginModalOpen(false);
+        setNotice(`Welcome back, ${user}`);
+        void bootstrap();
+      }}
+    />
+  );
+
+  if (view === "verify") {
+    return (
+      <Box sx={{ minHeight: "100vh", display: "flex", flexDirection: "column", bgcolor: "#fafafa" }}>
+        {renderAppBar(batch?.name)}
+        <Box sx={{ flex: 1, py: { xs: 2, md: 4 } }}>
+          <VerificationPortal />
+        </Box>
+        {renderFooter()}
+        {loginModal}
+        <Snackbar
+          open={!!notice}
+          autoHideDuration={5000}
+          onClose={() => setNotice("")}
+          message={notice}
+        />
+      </Box>
+    );
+  }
+
+  if (!adminUser) {
+    return (
+      <Box sx={{ minHeight: "100vh", display: "flex", flexDirection: "column", bgcolor: "#fafafa" }}>
+        {renderAppBar(batch?.name)}
+        <Container maxWidth="md" sx={{ py: 8, my: "auto" }}>
+          <Paper
+            className="glass-surface"
+            sx={{
+              p: { xs: 3, md: 5 },
+              textAlign: "center",
+              borderRadius: "21.6px",
+              border: "1px solid rgba(0, 0, 0, 0.06)",
+              backgroundColor: "#ffffff",
+              boxShadow: "0 4px 24px rgba(0, 0, 0, 0.04)",
+            }}
+          >
+            <Box
+              sx={{
+                width: 64,
+                height: 64,
+                borderRadius: "50%",
+                bgcolor: "rgba(220, 38, 38, 0.08)",
+                color: "#dc2626",
+                display: "grid",
+                placeItems: "center",
+                mx: "auto",
+                mb: 2,
+              }}
+            >
+              <LockOutlinedIcon sx={{ fontSize: 32, color: "#dc2626" }} />
+            </Box>
+            <Typography variant="h4" fontWeight={800} gutterBottom sx={{ color: "#111111" }}>
+              Superuser Authentication Required
+            </Typography>
+            <Typography sx={{ color: "#777777", maxWidth: 540, mx: "auto", mb: 4, lineHeight: 1.6, fontSize: "16px" }}>
+              Access to the FOSSert Certificate Issuer—including session configuration, participant imports, PDF rendering, and email dispatch—is restricted to SLIIT FOSS Community administrators.
+            </Typography>
+            <Stack direction="row" spacing={2} justifyContent="center" flexWrap="wrap">
+              <Button
+                variant="contained"
+                color="primary"
+                size="large"
+                onClick={() => setLoginModalOpen(true)}
+                sx={{ px: 3.5, py: 1.2, fontWeight: 700, borderRadius: "9999px" }}
+              >
+                Sign In as Admin
+              </Button>
+              <Button
+                variant="outlined"
+                size="large"
+                onClick={() => setView("verify")}
+                sx={{ px: 3, py: 1.2, borderRadius: "9999px", borderColor: "#eeeeee", color: "#111111" }}
+              >
+                Verify Certificates
               </Button>
             </Stack>
           </Paper>
-        ) : (
-          <Stack alignItems="center" spacing={2} sx={{ width: "100%", px: 2, textAlign: "center" }}>
-            <BrandMark size={82} priority />
-            <CircularProgress size={26} />
-            <Typography variant="h6">CertLoop</Typography>
-            <Typography color="text.secondary" sx={{ maxWidth: "100%" }}>
-              Connecting to the local certificate service…
-            </Typography>
-          </Stack>
-        )}
+        </Container>
+        {renderFooter()}
+        {loginModal}
+        <Snackbar
+          open={!!notice}
+          autoHideDuration={5000}
+          onClose={() => setNotice("")}
+          message={notice}
+        />
+      </Box>
+    );
+  }
+
+  if (!batch)
+    return (
+      <Box sx={{ minHeight: "100vh", display: "flex", flexDirection: "column", bgcolor: "#fafafa" }}>
+        {renderAppBar()}
+        <Box flex={1} display="grid" sx={{ placeItems: "center", p: 3 }}>
+          {error ? (
+            <Paper variant="outlined" sx={{ p: 3, maxWidth: 520, borderRadius: "21.6px", bgcolor: "#ffffff", borderColor: "rgba(0, 0, 0, 0.06)" }}>
+              <Stack spacing={2}>
+                <Alert severity="error">
+                  Could not reach the certificate backend: {error}
+                </Alert>
+                <Typography sx={{ color: "#777777" }}>
+                  Ensure the FastAPI backend server is running on port 8000, then retry.
+                </Typography>
+                <Button variant="contained" onClick={() => void bootstrap()} sx={{ borderRadius: "9999px" }}>
+                  Retry connection
+                </Button>
+              </Stack>
+            </Paper>
+          ) : (
+            <Stack alignItems="center" spacing={2} sx={{ width: "100%", px: 2, textAlign: "center" }}>
+              <BrandMark size={82} priority />
+              <CircularProgress size={26} color="primary" />
+              <Typography variant="h6" sx={{ color: "#111111", fontWeight: 700 }}>FOSSert</Typography>
+              <Typography sx={{ color: "#777777", maxWidth: "100%" }}>
+                Connecting to the SLIIT FOSS certificate service…
+              </Typography>
+            </Stack>
+          )}
+        </Box>
+        {renderFooter()}
+        {loginModal}
+        <Snackbar
+          open={!!notice}
+          autoHideDuration={5000}
+          onClose={() => setNotice("")}
+          message={notice}
+        />
       </Box>
     );
   const setB = (b: Batch) => setBatch(b);
@@ -1127,7 +1456,7 @@ export default function App() {
         </Button>
         <Button
           component="a"
-          href={`/api/batches/${batch.id}/zip`}
+          href={`/api/batches/${batch.id}/zip${getAdminToken() ? `?token=${encodeURIComponent(getAdminToken()!)}` : ""}`}
           startIcon={<DownloadIcon />}
           disabled={!currentCertificate}
         >
@@ -1339,7 +1668,7 @@ export default function App() {
         </Button>
         <Button
           component="a"
-          href={`/api/batches/${batch.id}/report`}
+          href={`/api/batches/${batch.id}/report${getAdminToken() ? `?token=${encodeURIComponent(getAdminToken()!)}` : ""}`}
           startIcon={<DownloadIcon />}
         >
           Export Report
@@ -1441,51 +1770,20 @@ export default function App() {
   ];
   return (
     <>
-      <AppBar
-        position="sticky"
-        elevation={0}
-        sx={{
-          background: "rgba(8,11,18,.78)",
-          borderBottom: "1px solid rgba(255,255,255,.07)",
-          backdropFilter: "blur(18px)",
-        }}
-      >
-        <Container maxWidth="xl">
-          <Toolbar disableGutters sx={{ minHeight: { xs: 68, md: 76 } }}>
-            <Box sx={{ display: { xs: "none", md: "block" } }}>
-              <BrandMark variant="horizontal" width={180} size={60} priority />
-            </Box>
-            <Box sx={{ display: { xs: "flex", md: "none" }, alignItems: "center" }}>
-              <BrandMark size={36} priority />
-              <Box sx={{ ml: 1.1 }}>
-                <Typography variant="h6" lineHeight={1.05}>CertLoop</Typography>
-                <Typography variant="caption" color="text.secondary" sx={{ display: { xs: "none", sm: "block" } }}>
-                  Generate. Personalize. Deliver.
-                </Typography>
-              </Box>
-            </Box>
-            <Box flex={1} />
-            <Box sx={{ display: { xs: "none", sm: "block" }, textAlign: "right", mr: 1.5 }}>
-              <Typography variant="caption" color="text.secondary">Current session</Typography>
-              <Typography variant="body2" fontWeight={700} noWrap maxWidth={260}>{batch.name}</Typography>
-            </Box>
-            <Chip size="small" label="Local workspace" color="primary" variant="outlined" />
-          </Toolbar>
-        </Container>
-      </AppBar>
+      {renderAppBar(batch.name)}
       <Box className="hero-grid" sx={{ pt: { xs: 5, md: 8 }, pb: { xs: 7, md: 10 } }}>
         <Container maxWidth="xl">
-          <Typography variant="overline" color="secondary.main">Certificate operations, simplified</Typography>
-          <Typography variant="h2" sx={{ mt: 1, maxWidth: 850, fontSize: { xs: "2.45rem", sm: "3.5rem", md: "4.45rem" } }}>
-            Generate. Personalize. <Box component="span" sx={{ background: "linear-gradient(135deg,#60A5FA,#38BDF8)", backgroundClip: "text", color: "transparent" }}>Deliver.</Box>
+          <Typography variant="overline" color="primary.main">SLIIT FOSS Community · Official Certificate Issuer</Typography>
+          <Typography variant="h1" sx={{ mt: 1, maxWidth: 850, fontSize: { xs: "2.4rem", sm: "3.2rem", md: "4rem" }, color: "#111111" }}>
+            Generate. Personalize. <Box component="span" sx={{ color: "#dc2626" }}>Deliver.</Box>
           </Typography>
-          <Typography sx={{ color: "text.secondary", mt: 2, maxWidth: 680, fontSize: { xs: "1rem", md: "1.12rem" }, lineHeight: 1.7 }}>
-            A focused workflow for creating high-quality certificates and delivering them safely through your authenticated Gmail account.
+          <Typography sx={{ color: "text.secondary", mt: 2, maxWidth: 680, fontSize: { xs: "1rem", md: "1.125rem" }, lineHeight: 1.6 }}>
+            Official certificate generation and dispatch platform for SLIIT FOSS Community events, workshops, and competitions.
           </Typography>
         </Container>
       </Box>
       <Container maxWidth="xl" sx={{ mt: { xs: -3, md: -5 }, pb: 5 }}>
-        <Paper className="glass-surface" sx={{ p: { xs: 1.5, md: 2.5 }, mb: 2.5 }}>
+        <Paper className="glass-surface" sx={{ p: { xs: 1.5, md: 2.5 }, mb: 2.5, borderRadius: "21.6px", bgcolor: "#ffffff", border: "1px solid rgba(0, 0, 0, 0.06)" }}>
           <TextField
             select
             fullWidth
@@ -1510,7 +1808,7 @@ export default function App() {
             ))}
           </Stepper>
         </Paper>
-        <Paper className="glass-surface" sx={{ p: { xs: 2, sm: 3, lg: 4 } }}>
+        <Paper className="glass-surface" sx={{ p: { xs: 2, sm: 3, lg: 4 }, borderRadius: "21.6px", bgcolor: "#ffffff", border: "1px solid rgba(0, 0, 0, 0.06)" }}>
           {busy && <LinearProgress sx={{ mb: 2 }} />}
           {error && (
             <Alert severity="error" onClose={() => setError("")} sx={{ mb: 2 }}>
@@ -1520,7 +1818,13 @@ export default function App() {
           <Box className="workflow-page" key={step}>{content[step]}</Box>
           <Divider sx={{ my: 3 }} />
           <Stack direction="row" justifyContent="space-between" spacing={2}>
-            <Button startIcon={<KeyboardArrowLeftIcon />} disabled={step === 0} onClick={() => requestStep(step - 1)}>
+            <Button
+              startIcon={<KeyboardArrowLeftIcon />}
+              disabled={step === 0}
+              onClick={() => requestStep(step - 1)}
+              variant="outlined"
+              sx={{ borderRadius: "9999px", borderColor: "#eeeeee", color: "#111111" }}
+            >
               Back
             </Button>
             <Button
@@ -1528,23 +1832,14 @@ export default function App() {
               endIcon={<KeyboardArrowRightIcon />}
               disabled={step === steps.length - 1}
               onClick={() => requestStep(step + 1)}
+              sx={{ borderRadius: "9999px", px: 3.5 }}
             >
               Continue
             </Button>
           </Stack>
         </Paper>
       </Container>
-      <Box component="footer" sx={{ borderTop: "1px solid rgba(255,255,255,.07)", py: 3.5 }}>
-        <Container maxWidth="xl">
-          <Stack direction={{ xs: "column", sm: "row" }} alignItems={{ xs: "flex-start", sm: "center" }} justifyContent="space-between" spacing={1}>
-            <Stack direction="row" spacing={1} alignItems="center">
-              <BrandMark size={30} />
-              <Typography variant="body2" color="text.secondary">CertLoop — Generate. Personalize. Deliver.</Typography>
-            </Stack>
-            <Typography variant="caption" color="text.secondary">© {new Date().getFullYear()} CertLoop · Crafted by Kavindu Umayanga</Typography>
-          </Stack>
-        </Container>
-      </Box>
+      {renderFooter()}
       <Dialog open={confirmOpen} onClose={() => setConfirmOpen(false)}>
         <DialogTitle>Confirm bulk delivery</DialogTitle>
         <DialogContent>
@@ -1640,6 +1935,7 @@ export default function App() {
           </Button>
         </DialogActions>
       </Dialog>
+      {loginModal}
       <Snackbar
         open={!!notice}
         autoHideDuration={5000}

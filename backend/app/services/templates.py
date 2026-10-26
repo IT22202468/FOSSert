@@ -1,7 +1,7 @@
 import re
 
 
-ALLOWED_PLACEHOLDERS = {"name"}
+ALLOWED_PLACEHOLDERS = {"name", "certificate_id", "certificate_code"}
 PLACEHOLDER_RE = re.compile(
     r"{{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*}}|(?<!{){\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*}(?!})"
 )

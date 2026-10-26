@@ -1,5 +1,28 @@
-import type { Batch, Region } from "./types";
+import type { AuthMeResponse, Batch, CertificateVerificationResult, Region } from "./types";
 const base = "/api";
+
+const TOKEN_KEY = "fossert_admin_token";
+
+export function getAdminToken(): string | null {
+  return localStorage.getItem(TOKEN_KEY);
+}
+
+export function setAdminToken(token: string | null): void {
+  if (token) {
+    localStorage.setItem(TOKEN_KEY, token);
+  } else {
+    localStorage.removeItem(TOKEN_KEY);
+  }
+}
+
+function buildHeaders(customHeaders?: HeadersInit): HeadersInit {
+  const token = getAdminToken();
+  const headers = new Headers(customHeaders || {});
+  if (token && !headers.has("Authorization")) {
+    headers.set("Authorization", `Bearer ${token}`);
+  }
+  return headers;
+}
 export interface ColumnMappingDetail {
   code: "column_mapping_required";
   message: string;
@@ -38,7 +61,8 @@ function errorMessage(detail: unknown, status: number): string {
   return `The request could not be completed (${status}). Please check the file and try again.`;
 }
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(base + path, init);
+  const headers = buildHeaders(init?.headers);
+  const response = await fetch(base + path, { ...init, headers });
   if (!response.ok) {
     let detail: unknown;
     try {
@@ -54,7 +78,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return response.json() as Promise<T>;
 }
 async function imageRequest(path: string, init?: RequestInit) {
-  const response = await fetch(base + path, init);
+  const headers = buildHeaders(init?.headers);
+  const response = await fetch(base + path, { ...init, headers });
   if (!response.ok) {
     let detail: unknown;
     try {
@@ -163,4 +188,21 @@ export const api = {
     ),
   action: (id: string, action: "pause" | "resume" | "retry-failed") =>
     request(`/batches/${id}/${action}`, { method: "POST" }),
+  login: async (username: string, password: string) => {
+    const res = await request<{ token: string; username: string }>("/auth/login", json("POST", { username, password }));
+    if (res?.token) {
+      setAdminToken(res.token);
+    }
+    return res;
+  },
+  logout: async () => {
+    try {
+      await request<{ ok: boolean }>("/auth/logout", { method: "POST" });
+    } finally {
+      setAdminToken(null);
+    }
+  },
+  authMe: () => request<AuthMeResponse>("/auth/me"),
+  verifyCertificate: (code: string) =>
+    request<CertificateVerificationResult>(`/verify/${encodeURIComponent(code.trim())}`),
 };

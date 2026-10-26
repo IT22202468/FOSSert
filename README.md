@@ -1,8 +1,9 @@
 <div align="center">
-  <img src="frontend/public/branding/certloop-logo.png" alt="CertLoop" width="520">
-  <h1>CertLoop</h1>
-  <p><strong>Generate. Personalize. Deliver.</strong></p>
-  <p>A local-first application for generating personalized PDF certificates and distributing them through Gmail SMTP.</p>
+  <img src="frontend/public/branding/fossert-logo.png" alt="FOSSert" width="520">
+  <h1>FOSSert</h1>
+  <p><strong>SLIIT FOSS Community Official Certificate Issuer</strong></p>
+  <p>Generate. Personalize. Deliver.</p>
+  <p>An application for generating personalized PDF certificates and distributing them through Gmail SMTP for SLIIT FOSS Community events and workshops.</p>
 
   <p>
     <img alt="Python 3.12+" src="https://img.shields.io/badge/Python-3.12%2B-3776AB?logo=python&logoColor=white">
@@ -14,12 +15,16 @@
 
 ## Overview
 
-CertLoop provides a five-step workflow for importing participants, designing certificates, generating personalized PDFs, composing messages, and monitoring delivery. Named sessions keep participant lists, certificate settings, email templates, generated files, and delivery history separate.
+FOSSert provides a five-step workflow for importing participants, designing certificates, generating personalized PDFs, composing messages, and monitoring delivery. Named sessions keep participant lists, certificate settings, email templates, generated files, and delivery history separate.
 
 Certificate work does not send email. Delivery begins only after an operator explicitly confirms a bulk send.
 
 ## Features
 
+- **Public Certificate Verification Portal**: Search and verify official SLIIT FOSS certificates by unique Certificate ID (`/verify` or `?code=FOSS-...`). Displays recipient name, event name, issue date, certified authenticity badge, interactive high-resolution preview, and PDF download.
+- **Unique Certificate IDs**: Every participant is issued a permanent, cryptographically random Certificate ID (e.g. `FOSS-2026-7B05-DF09`), rendered along the bottom edge of each generated PDF with smart light/dark contrast luminance matching.
+- **Superuser Authentication**: Administrative operations (session management, CSV imports, certificate generation, SMTP dispatches) are protected with PBKDF2-HMAC-SHA256 hashed password authentication, keeping the public verification portal accessible to all users. Default superuser credentials: `admin` / `sliitfossadmin`.
+- **SLIIT FOSS Community Identity**: Official Black (`#09090b`), White (`#ffffff`), and Red (`#dc2626`/`#ef4444`) branding with SLIIT FOSS Community logos.
 - Create uniquely named sessions with backend-generated IDs and isolated data.
 - Import CSV participant lists, map columns, validate names and email syntax, detect duplicates, and edit or exclude rows.
 - Upload JPG or PNG certificate templates and position a draggable, resizable participant-name area.
@@ -29,11 +34,11 @@ Certificate work does not send email. Delivery begins only after an operator exp
 - Search participants to preview and download individual certificates or download current certificates as a ZIP archive.
 - Regenerate certificates for valid participants—including previously `SENT` participants—without resending email or changing delivery status.
 - Preserve versioned certificate files and historical delivery-attempt attachment references.
-- Edit the email sender, subject, and plain-text body with the `{name}` personalization placeholder.
+- Edit the email sender, subject, and plain-text body with `{name}` and `{certificate_id}` personalization placeholders.
 - Send PDF attachments through Gmail SMTP with App Password authentication and verified sender aliases.
 - Monitor `PENDING`, `SENDING`, `SENT`, `FAILED`, and `UNCERTAIN` states in real time.
 - Pause and resume delivery, retry definite failures, and reconcile uncertain outcomes without automatic duplicate sends.
-- Export a CSV delivery report containing recipient status and attempt information.
+- Export a CSV delivery report containing Certificate IDs, recipient status, and attempt information.
 
 Certificate regeneration only creates a newer certificate artifact. It never automatically sends email, resets delivery states, or makes a previously sent participant eligible for the normal bulk-send queue.
 
@@ -65,7 +70,7 @@ Application screenshots are not currently included in the repository.
 - A Gmail account with 2-Step Verification and an App Password only when email delivery is needed
 - Bash and `lsof` when using the included helper scripts on macOS or Linux
 
-A custom font is optional. CertLoop uses Bitstream Vera Sans from ReportLab by default. Only upload fonts and certificate artwork you are permitted to use.
+A custom font is optional. FOSSert uses Bitstream Vera Sans from ReportLab by default. Only upload fonts and certificate artwork you are permitted to use.
 
 ### Install
 
@@ -117,7 +122,7 @@ Open the application at <http://127.0.0.1:5173>. FastAPI documentation is availa
 
 SQLite tables and safe additive migrations are applied automatically when the backend starts. Runtime data is stored under `./data` by default; the database is not recreated during normal startup.
 
-CertLoop binds to localhost by default. Add authentication and appropriate access controls before exposing it to a network.
+FOSSert binds to localhost by default. Add authentication and appropriate access controls before exposing it to a network.
 
 ## Environment Configuration
 

@@ -18,6 +18,8 @@ import {
   Typography,
 } from "@mui/material";
 import DownloadIcon from "@mui/icons-material/Download";
+import InfoOutlinedIcon from "@mui/icons-material/InfoOutlined";
+import { getAdminToken } from "../api";
 import type { Participant, Status } from "../types";
 
 const color: Record<
@@ -198,7 +200,7 @@ export default function ParticipantTable({
     <TableContainer
       component={Paper}
       variant="outlined"
-      sx={{ maxHeight: 520, borderRadius: 3, bgcolor: "rgba(2,6,23,.24)", overflowX: "auto" }}
+      sx={{ maxHeight: 520, borderRadius: "21.6px", bgcolor: "#ffffff", border: "1px solid rgba(0, 0, 0, 0.06)", overflowX: "auto" }}
     >
       <Table stickyHeader size="small">
         <TableHead>
@@ -207,6 +209,7 @@ export default function ParticipantTable({
             <TableCell>Participant</TableCell>
             <TableCell>Email</TableCell>
             <TableCell>Validation</TableCell>
+            <TableCell>Certificate ID</TableCell>
             <TableCell>Status</TableCell>
             <TableCell>Updated</TableCell>
             <TableCell>Attempt</TableCell>
@@ -217,7 +220,7 @@ export default function ParticipantTable({
         <TableBody>
           {rows.length === 0 && (
             <TableRow>
-              <TableCell colSpan={9} align="center" sx={{ py: 7 }}>
+              <TableCell colSpan={10} align="center" sx={{ py: 7 }}>
                 <Typography fontWeight={700}>No participants to show</Typography>
                 <Typography variant="body2" color="text.secondary">
                   Import a CSV or adjust the current search and filters.
@@ -280,6 +283,29 @@ export default function ParticipantTable({
                   </TableCell>
                 </>
               )}
+              <TableCell sx={{ minWidth: 150 }}>
+                {participant.certificate_code ? (
+                  <Tooltip title="View in Certificate Verification Portal">
+                    <Link
+                      href={`?code=${encodeURIComponent(participant.certificate_code)}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      sx={{
+                        fontFamily: "monospace",
+                        fontSize: "0.8rem",
+                        fontWeight: 600,
+                        color: "primary.light",
+                        textDecoration: "none",
+                        "&:hover": { textDecoration: "underline" },
+                      }}
+                    >
+                      {participant.certificate_code}
+                    </Link>
+                  </Tooltip>
+                ) : (
+                  "—"
+                )}
+              </TableCell>
               <TableCell>
                 <Chip
                   size="small"
@@ -288,7 +314,7 @@ export default function ParticipantTable({
                 />
                 {participant.error_reason && (
                   <Tooltip title={participant.error_reason}>
-                    <span> ⓘ</span>
+                    <InfoOutlinedIcon sx={{ fontSize: 16, ml: 0.5, verticalAlign: "middle", color: "text.secondary", cursor: "help" }} />
                   </Tooltip>
                 )}
               </TableCell>
@@ -348,7 +374,7 @@ export default function ParticipantTable({
                   <IconButton
                     aria-label={`Download ${participant.name}`}
                     component="a"
-                    href={`/api/participants/${participant.id}/certificate`}
+                    href={`/api/participants/${participant.id}/certificate${getAdminToken() ? `?token=${encodeURIComponent(getAdminToken()!)}` : ""}`}
                   >
                     <DownloadIcon />
                   </IconButton>

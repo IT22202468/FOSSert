@@ -6,10 +6,10 @@ const items: [
   string,
   string,
 ][] = [
-  ["used", "Counted activity (24h)", "#38BDF8"],
-  ["successful", "Successful sends", "#4ADE80"],
-  ["failed", "Failed attempts", "#F87171"],
-  ["uncertain", "Uncertain attempts", "#FBBF24"],
+  ["used", "Counted activity (24h)", "#dc2626"],
+  ["successful", "Successful sends", "#16a34a"],
+  ["failed", "Failed attempts", "#dc2626"],
+  ["uncertain", "Uncertain attempts", "#d97706"],
 ];
 
 export default function AllowanceCards({
@@ -19,7 +19,7 @@ export default function AllowanceCards({
 }) {
   return (
     <Box>
-      <Typography variant="subtitle2" sx={{ mb: 1 }}>
+      <Typography variant="subtitle2" sx={{ mb: 1, color: "#111111", fontWeight: 700 }}>
         Sending activity · rolling 24 hours
       </Typography>
       <Box
@@ -31,27 +31,27 @@ export default function AllowanceCards({
         }}
       >
         {allowance.enabled && (
-          <Paper variant="outlined" sx={{ p: 2, bgcolor: "rgba(2,6,23,.28)" }}>
+          <Paper variant="outlined" sx={{ p: 2, bgcolor: "#ffffff", border: "1px solid rgba(0, 0, 0, 0.06)", borderRadius: "21.6px" }}>
             <Typography variant="caption" color="text.secondary">
               Configured app cap remaining
             </Typography>
-            <Typography variant="h5" color="secondary.main">
+            <Typography variant="h5" sx={{ color: "#111111", fontWeight: 700 }}>
               {allowance.remaining} / {allowance.limit}
             </Typography>
           </Paper>
         )}
         {items.map(([key, label, color]) => (
-          <Paper variant="outlined" key={key} sx={{ p: 2, bgcolor: "rgba(2,6,23,.28)" }}>
+          <Paper variant="outlined" key={key} sx={{ p: 2, bgcolor: "#ffffff", border: "1px solid rgba(0, 0, 0, 0.06)", borderRadius: "21.6px" }}>
             <Typography variant="caption" color="text.secondary">
               {label}
             </Typography>
-            <Typography variant="h5" sx={{ color }}>
+            <Typography variant="h5" sx={{ color, fontWeight: 700 }}>
               {allowance[key]}
             </Typography>
           </Paper>
         ))}
       </Box>
-      <Alert severity="info">{allowance.notice}</Alert>
+      <Alert severity="info" sx={{ borderRadius: "14px" }}>{allowance.notice}</Alert>
     </Box>
   );
 }

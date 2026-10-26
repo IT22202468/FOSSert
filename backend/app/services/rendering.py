@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
+from reportlab.lib import colors
 from reportlab.lib.utils import ImageReader
 from reportlab.pdfgen import canvas
 
@@ -62,7 +63,7 @@ def fit_font(text: str, font_path: Path, max_size: int, min_size: int, max_width
     return font, min_size, False
 
 
-def render_certificate_image(template_path: Path, font_path: Path, name: str, region: dict) -> RenderedImage:
+def render_certificate_image(template_path: Path, font_path: Path, name: str, region: dict, certificate_code: str | None = None) -> RenderedImage:
     base = Image.open(template_path).convert("RGB")
     width, height = base.size
     x = round(region["x"] * width)
@@ -96,19 +97,40 @@ def render_certificate_image(template_path: Path, font_path: Path, name: str, re
         )
     rgba = base.convert("RGBA")
     rgba.alpha_composite(layer, (x, y))
+
+    if certificate_code:
+        code_font_size = max(14, round(height * 0.016))
+        try:
+            code_font = ImageFont.truetype(str(font_path), code_font_size)
+        except Exception:
+            code_font = ImageFont.load_default()
+        code_text = f"Certificate ID: {certificate_code}"
+        cbbox = code_font.getbbox(code_text)
+        cw = cbbox[2] - cbbox[0]
+        ch = cbbox[3] - cbbox[1]
+        cx = (width - cw) // 2
+        cy = height - round(height * 0.038) - ch
+        sample_y = min(height - 1, max(0, cy + ch // 2))
+        sample_x = min(width - 1, max(0, cx + cw // 2))
+        pixel = base.getpixel((sample_x, sample_y))
+        luminance = (pixel[0] * 299 + pixel[1] * 587 + pixel[2] * 114) // 1000
+        text_color = (40, 40, 40, 230) if luminance > 128 else (235, 235, 235, 230)
+        draw_code = ImageDraw.Draw(rgba)
+        draw_code.text((cx, cy), code_text, font=code_font, fill=text_color)
+
     warning = None if fits else f"Name cannot fit inside the configured area at the minimum font size of {region['min_font_size']}px"
     return RenderedImage(rgba.convert("RGB"), layer, (x, y), actual_size, warning)
 
 
-def render_preview_png(template_path: Path, font_path: Path, name: str, region: dict) -> tuple[bytes, int, str | None]:
-    rendered = render_certificate_image(template_path, font_path, name, region)
+def render_preview_png(template_path: Path, font_path: Path, name: str, region: dict, certificate_code: str | None = None) -> tuple[bytes, int, str | None]:
+    rendered = render_certificate_image(template_path, font_path, name, region, certificate_code=certificate_code)
     buffer = io.BytesIO()
     rendered.image.save(buffer, "PNG")
     return buffer.getvalue(), rendered.font_size, rendered.warning
 
 
-def render_certificate(template_path: Path, font_path: Path, output_dir: Path, participant_id: str, name: str, region: dict) -> RenderResult:
-    rendered = render_certificate_image(template_path, font_path, name, region)
+def render_certificate(template_path: Path, font_path: Path, output_dir: Path, participant_id: str, name: str, region: dict, certificate_code: str | None = None) -> RenderResult:
+    rendered = render_certificate_image(template_path, font_path, name, region, certificate_code=certificate_code)
 
     output_dir.mkdir(parents=True, exist_ok=True)
     stem = f"{safe_filename(name)}-{participant_id[:8]}"
@@ -131,6 +153,17 @@ def render_certificate(template_path: Path, font_path: Path, output_dir: Path, p
         ImageReader(overlay), overlay_x, page_h - overlay_y_from_top - overlay_h,
         width=overlay_w, height=overlay_h, preserveAspectRatio=True, mask="auto",
     )
+    if certificate_code:
+        font_pt = max(9, round(page_h * 0.015))
+        pdf.setFont("Helvetica", font_pt)
+        sample_y_offset = round(page_h * 0.038)
+        sample_x = page_w // 2
+        sample_y_img = min(page_h - 1, max(0, page_h - sample_y_offset))
+        pixel = rendered.image.getpixel((sample_x, sample_y_img))
+        luminance = (pixel[0] * 299 + pixel[1] * 587 + pixel[2] * 114) // 1000
+        color = "#282828" if luminance > 128 else "#E0E0E0"
+        pdf.setFillColor(colors.HexColor(color))
+        pdf.drawCentredString(page_w / 2.0, sample_y_offset, f"Certificate ID: {certificate_code}")
     pdf.showPage()
     pdf.save()
     render_version_path(pdf_path).write_text(RENDER_STYLE_VERSION, encoding="utf-8")

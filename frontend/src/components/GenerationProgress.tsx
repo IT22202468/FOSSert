@@ -44,7 +44,7 @@ export default function GenerationProgress({
           }}
         >
           {[["Total", progress.total], ["Generated", progress.succeeded], ["Failed", progress.failed], ["Remaining", progress.remaining]].map(([label, value]) => (
-            <Paper key={label} variant="outlined" sx={{ p: 1.25, bgcolor: "rgba(2,6,23,.3)" }}>
+            <Paper key={label} variant="outlined" sx={{ p: 1.25, bgcolor: "#ffffff", border: "1px solid rgba(0, 0, 0, 0.06)", borderRadius: "14px" }}>
               <Typography variant="caption" color="text.secondary">{label}</Typography>
               <Typography fontWeight={750}>{value}</Typography>
             </Paper>
