@@ -10,7 +10,9 @@ class Settings(BaseSettings):
 
     app_host: str = "127.0.0.1"
     app_port: int = 8000
-    database_url: str = "sqlite:///./data/certificates.db"
+    mongodb_uri: str = "mongodb://localhost:27017"
+    mongodb_db_name: str = "certloop"
+    database_url: str = "mongodb://localhost:27017/certloop"
     data_dir: Path = Path("./data")
     frontend_origin: str = "http://localhost:5173"
     max_upload_mb: int = 25

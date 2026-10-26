@@ -1,18 +1,26 @@
 import os
 from pathlib import Path
 
-os.environ.setdefault("DATABASE_URL", "sqlite:///./data/test-certificates.db")
-os.environ.setdefault("DATA_DIR", "./data/test-data")
-
+import mongomock
 import pytest
 from PIL import ImageFont
 
 from app.config import get_settings
-from app.database import Base, engine, ensure_schema
+from app.database import ensure_schema, set_test_db
+
+# Initialize test database early so test collection doesn't attempt to connect to live MongoDB
+_mock_client = mongomock.MongoClient()
+_mock_db = _mock_client["test_certloop"]
+set_test_db(_mock_db)
 
 
 @pytest.fixture(autouse=True)
 def clean_database():
+    mock_client = mongomock.MongoClient()
+    mock_db = mock_client["test_certloop"]
+    set_test_db(mock_db)
+    ensure_schema(mock_db)
+
     settings = get_settings()
     settings.auth_required = False
     settings.max_emails_per_day = 200
@@ -25,10 +33,8 @@ def clean_database():
     settings.smtp_workers = 1
     settings.smtp_timeout_seconds = 30
     settings.smtp_data_timeout_seconds = 300
-    Base.metadata.drop_all(engine)
-    Base.metadata.create_all(engine)
-    ensure_schema()
     yield
+    set_test_db(_mock_db)
 
 
 @pytest.fixture
@@ -43,4 +49,3 @@ def font_path() -> Path:
         pytest.skip("No system TrueType font is available for rendering tests")
     ImageFont.truetype(str(path), 12)
     return path
-

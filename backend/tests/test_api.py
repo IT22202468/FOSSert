@@ -594,7 +594,7 @@ def test_uncertain_reconciliation_is_explicit_audited_and_never_directly_retried
         assert first.status==DeliveryStatus.SENT and second.status==DeliveryStatus.FAILED
         assert first.attempts[0].outcome=='UNCERTAIN' and first.attempts[0].reconciliation_action=='CONFIRM_SENT'
         assert second.attempts[0].reconciliation_action=='CONFIRM_NOT_SENT'
-        records=db.scalars(__import__('sqlalchemy').select(SendRecord).where(SendRecord.batch_id==batch['id'])).all()
+        records=[SendRecord.from_doc(d) for d in db.send_records.find({"batch_id": batch['id']})]
         assert {record.status for record in records}=={'SENT','FAILED'}
         assert all(record.counts_against_limit for record in records)
 

@@ -1,30 +1,19 @@
 from datetime import datetime, timezone
+import logging
 from pathlib import Path
+from typing import Any, Generator
 import uuid
 
-from sqlalchemy import create_engine, event, inspect, text
-from sqlalchemy.orm import DeclarativeBase, sessionmaker
+from pymongo import ASCENDING, DESCENDING, MongoClient
+from pymongo.database import Database
 
 from .config import get_settings
 
 
-class Base(DeclarativeBase):
-    pass
+logger = logging.getLogger("certificate.database")
 
-
-settings = get_settings()
-connect_args = {"check_same_thread": False, "timeout": 30} if settings.database_url.startswith("sqlite") else {}
-engine = create_engine(settings.database_url, connect_args=connect_args)
-
-if settings.database_url.startswith("sqlite"):
-    @event.listens_for(engine, "connect")
-    def set_sqlite_pragma(dbapi_connection, connection_record):
-        cursor = dbapi_connection.cursor()
-        cursor.execute("PRAGMA journal_mode=WAL")
-        cursor.execute("PRAGMA busy_timeout=30000")
-        cursor.close()
-
-SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
+_client: MongoClient | None = None
+_test_db: Database | None = None
 
 
 def clean_session_name(value: str | None) -> str:
@@ -41,174 +30,286 @@ def normalized_session_name(value: str) -> str:
     return clean_session_name(value).casefold()
 
 
-def ensure_unique_session_names(connection) -> None:
-    """Backfill unique readable names for legacy blank/duplicate sessions."""
-    rows = connection.execute(text("SELECT id, name FROM batches ORDER BY created_at, id")).all()
-    used: set[str] = set()
-    unnamed = 0
-    for session_id, stored_name in rows:
-        raw = " ".join((stored_name or "").strip().split())
-        if not raw:
-            unnamed += 1
-            raw = f"Session {unnamed}"
-        raw = raw[:100].rstrip() or "Session"
-        candidate = raw
-        suffix = 2
-        while candidate.casefold() in used:
-            ending = f" {suffix}"
-            candidate = f"{raw[:100-len(ending)].rstrip()}{ending}"
-            suffix += 1
-        canonical = candidate.casefold()
-        used.add(canonical)
-        connection.execute(text("UPDATE batches SET name=:name, name_normalized=:normalized WHERE id=:id"), {
-            "name": candidate, "normalized": canonical, "id": session_id,
-        })
-    connection.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ux_batches_name_normalized ON batches(name_normalized)"))
+def relocated_path(raw_path: str | None, base_dir: Path) -> str | None:
+    if not raw_path:
+        return None
+    p = Path(raw_path)
+    if p.exists():
+        return str(p.resolve())
+    candidate = base_dir / p.name
+    if candidate.exists():
+        return str(candidate.resolve())
+    return raw_path
 
 
-def relocated_path(stored: str | None, root: Path, batch_id: str | None = None) -> str | None:
-    """Resolve a stale absolute runtime path after the project directory moves."""
-    if not stored or Path(stored).exists():
-        return stored
-    candidate = root / batch_id / Path(stored).name if batch_id else root / Path(stored).name
-    return str(candidate.resolve()) if candidate.exists() else stored
+def get_mongo_client() -> MongoClient:
+    global _client
+    if _client is None:
+        settings = get_settings()
+        _client = MongoClient(settings.mongodb_uri, timeoutMS=5000, serverSelectionTimeoutMS=5000)
+    return _client
 
 
-def ensure_schema() -> None:
-    """Apply the small additive migration needed by existing local SQLite installs."""
-    if engine.dialect.name != "sqlite" or "batches" not in inspect(engine).get_table_names():
-        return
-    additions = {
-        "batches": {
-            "name_normalized": "VARCHAR(100)",
-            "send_job_total": "INTEGER NOT NULL DEFAULT 0",
-            "send_job_started_at": "DATETIME",
-            "send_job_finished_at": "DATETIME",
-            "active_import_id": "VARCHAR(36)",
-            "generation_job_id": "VARCHAR(36)",
-            "generation_status": "VARCHAR(20) NOT NULL DEFAULT 'IDLE'",
-            "generation_total": "INTEGER NOT NULL DEFAULT 0",
-            "generation_succeeded": "INTEGER NOT NULL DEFAULT 0",
-            "generation_failed": "INTEGER NOT NULL DEFAULT 0",
-            "generation_current_name": "VARCHAR(500)",
-            "generation_started_at": "DATETIME",
-            "generation_finished_at": "DATETIME",
-            "certificate_revision": "VARCHAR(36)",
-        },
-        "participants": {
-            "certificate_code": "VARCHAR(64)",
-            "is_current_import": "BOOLEAN NOT NULL DEFAULT 1",
-            "import_id": "VARCHAR(36)",
-            "canonical_email": "VARCHAR(320)",
-            "previous_delivery_id": "VARCHAR",
-            "generation_error": "TEXT",
-            "certificate_revision": "VARCHAR(36)",
-            "is_revoked": "BOOLEAN NOT NULL DEFAULT 0",
-            "revoked_at": "DATETIME",
-            "revocation_reason": "TEXT",
-        },
-        "delivery_attempts": {
-            "reconciliation_action": "VARCHAR(40)",
-            "reconciliation_note": "TEXT",
-            "reconciled_at": "DATETIME",
-            "certificate_path": "TEXT",
-            "certificate_filename": "VARCHAR(600)",
-        },
-    }
-    with engine.begin() as connection:
-        for table, columns in additions.items():
-            if table not in inspect(engine).get_table_names():
-                continue
-            existing = {column["name"] for column in inspect(engine).get_columns(table)}
-            for name, definition in columns.items():
-                if name not in existing:
-                    connection.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {definition}"))
-        # Give legacy active rows an explicit immutable import identity without
-        # changing any participant, certificate, delivery, or attempt record.
-        batches = connection.execute(text("SELECT id, active_import_id FROM batches")).all()
-        for batch_id, active_import_id in batches:
-            import_id = active_import_id or f"legacy-{batch_id[:29]}"
-            if not active_import_id:
-                connection.execute(text("UPDATE batches SET active_import_id=:import_id WHERE id=:batch_id"), {"import_id": import_id, "batch_id": batch_id})
-            connection.execute(text("UPDATE participants SET import_id=:import_id WHERE batch_id=:batch_id AND is_current_import=1 AND import_id IS NULL"), {"import_id": import_id, "batch_id": batch_id})
-        # Existing generated certificates represent the current settings at the
-        # time this revision tracking is introduced. Future configuration
-        # changes advance only the batch revision and make old files visibly stale.
-        for batch_id, stored_revision in connection.execute(text("SELECT id, certificate_revision FROM batches")).all():
-            revision = stored_revision or str(uuid.uuid4())
-            if not stored_revision:
-                connection.execute(text("UPDATE batches SET certificate_revision=:revision WHERE id=:batch_id"), {"revision": revision, "batch_id": batch_id})
-            connection.execute(text("UPDATE participants SET certificate_revision=:revision WHERE batch_id=:batch_id AND certificate_path IS NOT NULL AND certificate_revision IS NULL"), {"revision": revision, "batch_id": batch_id})
-        connection.execute(text("UPDATE participants SET canonical_email=lower(email) WHERE canonical_email IS NULL AND normalized_email NOT LIKE '__invalid__:%'"))
-        # Backfill unique certificate codes for existing participants
-        from .services.codes import generate_certificate_code
-        for participant_id, in connection.execute(text("SELECT id FROM participants WHERE certificate_code IS NULL")).all():
-            code = generate_certificate_code()
-            connection.execute(text("UPDATE participants SET certificate_code=:code WHERE id=:id"), {"code": code, "id": participant_id})
-        connection.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ux_participants_certificate_code ON participants(certificate_code)"))
-        # Ensure default superuser exists
-        if "admin_users" in inspect(engine).get_table_names():
-            admin_count = connection.execute(text("SELECT count(*) FROM admin_users")).scalar()
-            if not admin_count:
-                from .services.auth import hash_password
-                pw_hash, salt = hash_password(settings.superuser_password)
-                connection.execute(text(
-                    "INSERT INTO admin_users (id, username, password_hash, salt, created_at) "
-                    "VALUES (:id, :username, :hash, :salt, :now)"
-                ), {
-                    "id": str(uuid.uuid4()),
-                    "username": settings.superuser_username,
-                    "hash": pw_hash,
-                    "salt": salt,
-                    "now": datetime.now(timezone.utc),
-                })
-        ensure_unique_session_names(connection)
-        # Runtime files were historically stored as absolute paths. Repair only
-        # paths whose old target is missing and whose basename exists in the
-        # configured data directory; delivery state and audit rows are untouched.
-        for batch_id, template_path, font_path in connection.execute(text("SELECT id, template_path, font_path FROM batches")).all():
-            repaired_template = relocated_path(template_path, settings.upload_dir)
-            repaired_font = relocated_path(font_path, settings.upload_dir)
-            if repaired_template != template_path or repaired_font != font_path:
-                connection.execute(text("UPDATE batches SET template_path=:template_path, font_path=:font_path WHERE id=:batch_id"), {
-                    "template_path": repaired_template, "font_path": repaired_font, "batch_id": batch_id,
-                })
-        for participant_id, batch_id, certificate_path, preview_path in connection.execute(text("SELECT id, batch_id, certificate_path, preview_path FROM participants WHERE certificate_path IS NOT NULL OR preview_path IS NOT NULL")).all():
-            repaired_certificate = relocated_path(certificate_path, settings.generated_dir, batch_id)
-            repaired_preview = relocated_path(preview_path, settings.generated_dir, batch_id)
-            if repaired_certificate != certificate_path or repaired_preview != preview_path:
-                connection.execute(text("UPDATE participants SET certificate_path=:certificate_path, preview_path=:preview_path WHERE id=:participant_id"), {
-                    "certificate_path": repaired_certificate, "preview_path": repaired_preview, "participant_id": participant_id,
-                })
-        for attempt_id, batch_id, certificate_path in connection.execute(text("""
-            SELECT delivery_attempts.id, participants.batch_id, delivery_attempts.certificate_path
-            FROM delivery_attempts
-            JOIN participants ON participants.id = delivery_attempts.participant_id
-            WHERE delivery_attempts.certificate_path IS NOT NULL
-        """)).all():
-            repaired_certificate = relocated_path(certificate_path, settings.generated_dir, batch_id)
-            if repaired_certificate != certificate_path:
-                connection.execute(text("UPDATE delivery_attempts SET certificate_path=:path WHERE id=:attempt_id"), {"path": repaired_certificate, "attempt_id": attempt_id})
-        # Snapshot the attachment used by each historical delivery attempt.
-        # Versioned regeneration can then safely update the participant's current file.
-        connection.execute(text("""
-            UPDATE delivery_attempts
-            SET certificate_path = (
-                    SELECT certificate_path FROM participants
-                    WHERE participants.id = delivery_attempts.participant_id
-                ),
-                certificate_filename = (
-                    SELECT filename FROM participants
-                    WHERE participants.id = delivery_attempts.participant_id
+def set_test_db(db: Database | None) -> None:
+    global _test_db
+    _test_db = db
+
+
+def get_db_instance() -> Database:
+    if _test_db is not None:
+        return _test_db
+    settings = get_settings()
+    client = get_mongo_client()
+    return client[settings.mongodb_db_name]
+
+
+class DatabaseContext:
+    """Context manager replacing SessionLocal() for thread workers and tests."""
+    def __init__(self):
+        self._db = get_db_instance()
+        self._identity_map: dict[tuple[type, str], Any] = {}
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        pass
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._db, name)
+
+    def __getitem__(self, name: str) -> Any:
+        return self._db[name]
+
+    def _save_obj(self, obj: Any) -> None:
+        from .models import (
+            Batch, Participant, DeliveryAttempt, SendRecord, AdminUser, AdminSession
+        )
+        if isinstance(obj, Batch):
+            self._db.batches.replace_one({"_id": obj.id}, obj.to_doc(), upsert=True)
+        elif isinstance(obj, Participant):
+            self._db.participants.replace_one({"_id": obj.id}, obj.to_doc(), upsert=True)
+        elif isinstance(obj, DeliveryAttempt):
+            self._db.delivery_attempts.replace_one({"_id": obj.id}, obj.to_doc(), upsert=True)
+        elif isinstance(obj, SendRecord):
+            self._db.send_records.replace_one({"_id": obj.id}, obj.to_doc(), upsert=True)
+        elif isinstance(obj, AdminUser):
+            self._db.admin_users.replace_one({"_id": obj.id}, obj.to_doc(), upsert=True)
+        elif isinstance(obj, AdminSession):
+            self._db.admin_sessions.replace_one({"_id": obj.id}, obj.to_doc(), upsert=True)
+
+    def add(self, obj: Any) -> None:
+        self._save_obj(obj)
+        obj_id = getattr(obj, "id", None) or getattr(obj, "token", None)
+        if obj_id:
+            self._identity_map[(type(obj), obj_id)] = obj
+
+    def commit(self) -> None:
+        for obj in list(self._identity_map.values()):
+            self._save_obj(obj)
+
+    def flush(self) -> None:
+        self.commit()
+
+    def rollback(self) -> None:
+        pass
+
+    def refresh(self, obj: Any) -> None:
+        from .models import Batch, Participant
+        if isinstance(obj, Batch):
+            doc = self._db.batches.find_one({"_id": obj.id})
+            if doc:
+                b = Batch.from_doc(doc)
+                obj.__dict__.update(b.__dict__)
+        elif isinstance(obj, Participant):
+            doc = self._db.participants.find_one({"_id": obj.id})
+            if doc:
+                p = Participant.from_doc(doc)
+                obj.__dict__.update(p.__dict__)
+
+    def get(self, model_cls: Any, obj_id: str) -> Any:
+        from .models import (
+            Batch, Participant, DeliveryAttempt, SendRecord, AdminUser, AdminSession
+        )
+        if issubclass(model_cls, Batch):
+            doc = self._db.batches.find_one({"_id": obj_id})
+            if doc:
+                obj = Batch.from_doc(doc)
+                p_docs = list(self._db.participants.find({"batch_id": obj_id}).sort("row_number", 1))
+                p_ids = [p["_id"] for p in p_docs]
+                att_docs = list(self._db.delivery_attempts.find({"participant_id": {"$in": p_ids}}).sort("attempt_number", 1))
+                att_by_p: dict[str, list[DeliveryAttempt]] = {}
+                for a in att_docs:
+                    att_by_p.setdefault(a["participant_id"], []).append(DeliveryAttempt.from_doc(a))
+                participants = []
+                for p in p_docs:
+                    part = Participant.from_doc(p)
+                    part.attempts = att_by_p.get(part.id, [])
+                    part.batch = obj
+                    participants.append(part)
+                obj.participants = participants
+            else:
+                obj = None
+        elif issubclass(model_cls, Participant):
+            doc = self._db.participants.find_one({"_id": obj_id})
+            if doc:
+                obj = Participant.from_doc(doc)
+                att_docs = list(self._db.delivery_attempts.find({"participant_id": obj_id}).sort("attempt_number", 1))
+                obj.attempts = [DeliveryAttempt.from_doc(a) for a in att_docs]
+                batch_doc = self._db.batches.find_one({"_id": obj.batch_id})
+                obj.batch = Batch.from_doc(batch_doc) if batch_doc else None
+            else:
+                obj = None
+        elif issubclass(model_cls, DeliveryAttempt):
+            doc = self._db.delivery_attempts.find_one({"_id": obj_id})
+            obj = DeliveryAttempt.from_doc(doc) if doc else None
+        elif issubclass(model_cls, SendRecord):
+            doc = self._db.send_records.find_one({"_id": obj_id})
+            obj = SendRecord.from_doc(doc) if doc else None
+        elif issubclass(model_cls, AdminUser):
+            doc = self._db.admin_users.find_one({"_id": obj_id})
+            obj = AdminUser.from_doc(doc) if doc else None
+        elif issubclass(model_cls, AdminSession):
+            doc = self._db.admin_sessions.find_one({"_id": obj_id})
+            obj = AdminSession.from_doc(doc) if doc else None
+        else:
+            obj = None
+        if obj:
+            self._identity_map[(model_cls, obj_id)] = obj
+        return obj
+
+    def query(self, model_cls: Any) -> Any:
+        class _Query:
+            def __init__(query_self, db, cls):
+                query_self._db = db
+                query_self._cls = cls
+
+            def count(query_self) -> int:
+                from .models import (
+                    Batch, Participant, DeliveryAttempt, SendRecord, AdminUser, AdminSession
                 )
-            WHERE certificate_path IS NULL
-        """))
+                if issubclass(query_self._cls, SendRecord):
+                    return query_self._db.send_records.count_documents({})
+                elif issubclass(query_self._cls, Participant):
+                    return query_self._db.participants.count_documents({})
+                elif issubclass(query_self._cls, Batch):
+                    return query_self._db.batches.count_documents({})
+                elif issubclass(query_self._cls, DeliveryAttempt):
+                    return query_self._db.delivery_attempts.count_documents({})
+                elif issubclass(query_self._cls, AdminUser):
+                    return query_self._db.admin_users.count_documents({})
+                elif issubclass(query_self._cls, AdminSession):
+                    return query_self._db.admin_sessions.count_documents({})
+                return 0
+
+        return _Query(self._db, model_cls)
+
+    def delete(self, obj: Any) -> None:
+        from .models import (
+            Batch, Participant, DeliveryAttempt, SendRecord, AdminUser, AdminSession
+        )
+        obj_id = getattr(obj, "id", None) or getattr(obj, "token", None) or str(obj)
+        if isinstance(obj, Batch):
+            self._db.batches.delete_one({"_id": obj_id})
+        elif isinstance(obj, Participant):
+            self._db.participants.delete_one({"_id": obj_id})
+        elif isinstance(obj, DeliveryAttempt):
+            self._db.delivery_attempts.delete_one({"_id": obj_id})
+        elif isinstance(obj, SendRecord):
+            self._db.send_records.delete_one({"_id": obj_id})
+        elif isinstance(obj, AdminUser):
+            self._db.admin_users.delete_one({"_id": obj_id})
+        elif isinstance(obj, AdminSession):
+            self._db.admin_sessions.delete_one({"_id": obj_id})
+        self._identity_map.pop((type(obj), obj_id), None)
 
 
-def get_db():
-    db = SessionLocal()
+def get_db() -> Generator[DatabaseContext, None, None]:
+    yield DatabaseContext()
+
+
+def SessionLocal() -> DatabaseContext:
+    return DatabaseContext()
+
+
+def ensure_unique_session_names(db: Database) -> None:
+    batches = list(db.batches.find().sort("created_at", 1))
+    seen = set()
+    counter = 1
+    for b in batches:
+        raw_name = b.get("name") or ""
+        try:
+            clean = clean_session_name(raw_name)
+        except ValueError:
+            clean = f"Session {counter}"
+            counter += 1
+        cand_norm = normalized_session_name(clean)
+        candidate = clean
+        suff = 2
+        while cand_norm in seen:
+            candidate = f"{clean} {suff}"
+            cand_norm = normalized_session_name(candidate)
+            suff += 1
+        seen.add(cand_norm)
+        db.batches.update_one(
+            {"_id": b["_id"]},
+            {"$set": {"name": candidate, "name_normalized": cand_norm}}
+        )
+
+
+def ensure_indexes(db: Database) -> None:
     try:
-        yield db
-    finally:
-        db.close()
+        ensure_unique_session_names(db)
+        # batches collection
+        db.batches.create_index([("name_normalized", ASCENDING)], unique=True)
 
+        # participants collection
+        db.participants.create_index([("batch_id", ASCENDING), ("normalized_email", ASCENDING)], unique=True)
+        db.participants.create_index([("certificate_code", ASCENDING)], unique=True, sparse=True)
+        db.participants.create_index([("idempotency_key", ASCENDING)], unique=True)
+        db.participants.create_index([("batch_id", ASCENDING), ("is_current_import", ASCENDING)])
+        db.participants.create_index([("status", ASCENDING)])
+
+        # delivery attempts
+        db.delivery_attempts.create_index([("participant_id", ASCENDING)])
+        db.delivery_attempts.create_index([("participant_id", ASCENDING), ("attempt_number", DESCENDING)])
+
+        # send records
+        db.send_records.create_index([("reserved_at", DESCENDING)])
+        db.send_records.create_index([("participant_id", ASCENDING)])
+        db.send_records.create_index([("status", ASCENDING)])
+
+        # admin credentials & sessions
+        db.admin_users.create_index([("username", ASCENDING)], unique=True)
+        db.admin_sessions.create_index([("expires_at", ASCENDING)], expireAfterSeconds=0)
+    except Exception as exc:
+        logger.warning("Index creation notice: %s", exc)
+
+
+def ensure_default_admin(db: Database) -> None:
+    settings = get_settings()
+    existing = db.admin_users.find_one({"username": settings.superuser_username})
+    if not existing:
+        from .services.auth import hash_password
+        pw_hash, salt = hash_password(settings.superuser_password)
+        db.admin_users.insert_one({
+            "_id": str(uuid.uuid4()),
+            "username": settings.superuser_username,
+            "password_hash": pw_hash,
+            "salt": salt,
+            "created_at": datetime.now(timezone.utc),
+        })
+
+
+def ensure_schema(db: Database | None = None) -> None:
+    target_db = get_db_instance() if db is None else db
+    ensure_indexes(target_db)
+    ensure_default_admin(target_db)
+
+
+# Backwards compatibility dummy for tests
+class _Base:
+    metadata = None
+
+Base = _Base()
+engine = None

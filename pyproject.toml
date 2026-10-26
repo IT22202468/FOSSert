@@ -6,7 +6,7 @@ requires-python = ">=3.12"
 dependencies = [
   "fastapi>=0.115,<1",
   "uvicorn[standard]>=0.34,<1",
-  "sqlalchemy>=2.0,<3",
+  "pymongo>=4.9,<5",
   "pydantic-settings>=2.7,<3",
   "python-multipart>=0.0.20,<1",
   "email-validator>=2.2,<3",
@@ -15,7 +15,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-test = ["pytest>=8.3,<10", "httpx>=0.28,<1", "pytest-cov>=6,<8"]
+test = ["pytest>=8.3,<10", "httpx>=0.28,<1", "pytest-cov>=6,<8", "mongomock>=4.3,<5"]
 
 [tool.setuptools.packages.find]
 where = ["backend"]

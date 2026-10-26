@@ -59,7 +59,7 @@ def test_uncertain_submission_is_never_automatically_retried():
     assert client.calls==1
     with SessionLocal() as db:
         assert db.get(Participant,pid).status==DeliveryStatus.UNCERTAIN
-        record=db.scalars(__import__('sqlalchemy').select(SendRecord).where(SendRecord.participant_id==pid)).one()
+        record=SendRecord.from_doc(db.send_records.find_one({"participant_id": pid}))
         assert record.status=="UNCERTAIN" and record.counts_against_limit
 
 
@@ -133,7 +133,7 @@ def test_pause_recheck_returns_claimed_participant_to_pending_without_sending():
     assert client.calls==0
     with SessionLocal() as db:
         assert db.get(Participant,pid).status==DeliveryStatus.PENDING
-        record=db.scalars(__import__('sqlalchemy').select(SendRecord).where(SendRecord.participant_id==pid)).one()
+        record=SendRecord.from_doc(db.send_records.find_one({"participant_id": pid}))
         assert record.status=="CANCELLED" and not record.counts_against_limit
 
 
@@ -200,7 +200,7 @@ def test_single_worker_processes_200_recipients_with_one_client_session():
     delivery._run(batch_id)
     elapsed=time.perf_counter()-started
     with SessionLocal() as db:
-        sent=db.scalar(__import__('sqlalchemy').select(__import__('sqlalchemy').func.count()).select_from(Participant).where(Participant.status==DeliveryStatus.SENT))
+        sent=db.participants.count_documents({"status": DeliveryStatus.SENT.value})
     assert sent==200 and client.calls==200
     assert factory_calls==1 and client.closed
     assert elapsed<15

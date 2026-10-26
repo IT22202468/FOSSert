@@ -1,11 +1,10 @@
 import hashlib
 import secrets
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
 from fastapi import Depends, HTTPException, Request, Security
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from sqlalchemy import select
-from sqlalchemy.orm import Session
 
 from ..config import get_settings
 from ..database import get_db
@@ -32,43 +31,38 @@ def verify_password(password: str, password_hash: str, salt: str) -> bool:
     return secrets.compare_digest(expected_hash, password_hash)
 
 
-def create_admin_session(db: Session, user: AdminUser, duration_hours: int = 72) -> tuple[str, datetime]:
+def create_admin_session(db: Any, user: AdminUser, duration_hours: int = 72) -> tuple[str, datetime]:
     """Creates a new durable admin session token."""
     token = secrets.token_urlsafe(48)
     expires = datetime.now(timezone.utc) + timedelta(hours=duration_hours)
     session_obj = AdminSession(token=token, user_id=user.id, expires_at=expires)
-    db.add(session_obj)
-    db.commit()
+    db.admin_sessions.insert_one(session_obj.to_doc())
     return token, expires
 
 
-def revoke_admin_session(db: Session, token: str) -> bool:
+def revoke_admin_session(db: Any, token: str) -> bool:
     """Revokes an existing admin session token."""
-    session = db.get(AdminSession, token)
-    if session:
-        db.delete(session)
-        db.commit()
-        return True
-    return False
+    res = db.admin_sessions.delete_one({"_id": token})
+    return bool(res.deleted_count > 0)
 
 
 def get_current_admin(
     request: Request,
     credentials: HTTPAuthorizationCredentials | None = Security(security),
-    db: Session = Depends(get_db),
+    db: Any = Depends(get_db),
 ) -> AdminUser:
     """Dependency that enforces superuser authentication via Bearer token or ?token= query parameter."""
     settings = get_settings()
     if not settings.auth_required:
-        dummy = db.scalars(select(AdminUser)).first()
-        if not dummy:
-            dummy = AdminUser(
-                id="test-admin",
-                username="admin",
-                password_hash="test",
-                salt="test",
-            )
-        return dummy
+        dummy_doc = db.admin_users.find_one()
+        if dummy_doc:
+            return AdminUser.from_doc(dummy_doc)
+        return AdminUser(
+            id="test-admin",
+            username="admin",
+            password_hash="test",
+            salt="test",
+        )
 
     token = None
     if credentials and credentials.credentials:
@@ -79,19 +73,26 @@ def get_current_admin(
     if not token:
         raise HTTPException(status_code=401, detail="Authentication required")
     now = datetime.now(timezone.utc)
-    session = db.get(AdminSession, token)
-    if not session or (session.expires_at and session.expires_at.replace(tzinfo=timezone.utc if session.expires_at.tzinfo is None else session.expires_at.tzinfo) < now):
+    session_doc = db.admin_sessions.find_one({"_id": token})
+    if not session_doc:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
-    user = db.get(AdminUser, session.user_id)
-    if not user:
+    session = AdminSession.from_doc(session_doc)
+    exp = session.expires_at
+    if exp:
+        if exp.tzinfo is None:
+            exp = exp.replace(tzinfo=timezone.utc)
+        if exp < now:
+            raise HTTPException(status_code=401, detail="Invalid or expired session")
+    user_doc = db.admin_users.find_one({"_id": session.user_id})
+    if not user_doc:
         raise HTTPException(status_code=401, detail="User not found")
-    return user
+    return AdminUser.from_doc(user_doc)
 
 
 def get_optional_admin(
     request: Request,
     credentials: HTTPAuthorizationCredentials | None = Security(security),
-    db: Session = Depends(get_db),
+    db: Any = Depends(get_db),
 ) -> AdminUser | None:
     """Optional dependency that returns the admin user if authenticated, else None."""
     try:
