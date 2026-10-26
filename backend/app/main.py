@@ -1208,7 +1208,7 @@ def configure_email(batch_id: str, payload: EmailConfig, db: Any = Depends(get_d
     return serialize_batch(batch_or_404(db, batch.id))
 
 
-@app.get("/api/smtp/status", dependencies=[Depends(get_current_admin)])
+@app.get("/api/smtp/status")
 def smtp_status():
     return {
         "configured": smtp_configured(),

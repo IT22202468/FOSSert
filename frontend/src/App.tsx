@@ -334,7 +334,7 @@ export default function App() {
         setIdentity(status.configured ? (status.sender_email ?? "") : ""),
       )
       .catch(() => {});
-  }, []);
+  }, [adminUser]);
   useEffect(() => {
     if (batch && !emailDirty) {
       setEmailDrafts((current) =>
