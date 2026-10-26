@@ -19,10 +19,12 @@ def clean_database():
     mock_client = mongomock.MongoClient()
     mock_db = mock_client["test_certloop"]
     set_test_db(mock_db)
-    ensure_schema(mock_db)
 
     settings = get_settings()
     settings.auth_required = False
+    settings.superuser_username = "admin"
+    settings.superuser_password = "test-admin-secret-password"
+    ensure_schema(mock_db)
     settings.max_emails_per_day = 200
     settings.email_send_delay_seconds = 0
     settings.min_email_send_delay_seconds = 0

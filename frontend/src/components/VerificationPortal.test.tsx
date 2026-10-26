@@ -117,6 +117,8 @@ describe("AdminLoginModal", () => {
       />
     );
 
+    const usernameInput = screen.getByPlaceholderText(/Enter username/i);
+    fireEvent.change(usernameInput, { target: { value: "admin" } });
     const passwordInput = screen.getByPlaceholderText(/Enter superuser password/i);
     fireEvent.change(passwordInput, { target: { value: "sliitfossadmin" } });
 

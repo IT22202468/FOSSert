@@ -288,9 +288,11 @@ def ensure_indexes(db: Database) -> None:
 
 def ensure_default_admin(db: Database) -> None:
     settings = get_settings()
+    if not settings.superuser_password:
+        return
     existing = db.admin_users.find_one({"username": settings.superuser_username})
+    from .services.auth import hash_password, verify_password
     if not existing:
-        from .services.auth import hash_password
         pw_hash, salt = hash_password(settings.superuser_password)
         db.admin_users.insert_one({
             "_id": str(uuid.uuid4()),
@@ -299,6 +301,14 @@ def ensure_default_admin(db: Database) -> None:
             "salt": salt,
             "created_at": datetime.now(timezone.utc),
         })
+    else:
+        # If the password in environment variables has changed, synchronize the stored hash
+        if not verify_password(settings.superuser_password, existing.get("password_hash", ""), existing.get("salt", "")):
+            pw_hash, salt = hash_password(settings.superuser_password)
+            db.admin_users.update_one(
+                {"_id": existing["_id"]},
+                {"$set": {"password_hash": pw_hash, "salt": salt, "updated_at": datetime.now(timezone.utc)}},
+            )
 
 
 def ensure_schema(db: Database | None = None) -> None:

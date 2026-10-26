@@ -34,7 +34,6 @@ export default function BrandMark({
         height: size,
         maxWidth: "100%",
         objectFit: "contain",
-        objectPosition: "left center",
         flex: "0 0 auto",
         userSelect: "none",
       }}

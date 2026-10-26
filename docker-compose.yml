@@ -19,7 +19,7 @@ services:
       - SMTP_SENDER_EMAIL=${SMTP_SENDER_EMAIL:-}
       - AUTH_REQUIRED=${AUTH_REQUIRED:-true}
       - SUPERUSER_USERNAME=${SUPERUSER_USERNAME:-admin}
-      - SUPERUSER_PASSWORD=${SUPERUSER_PASSWORD:-admin123456}
+      - SUPERUSER_PASSWORD=${SUPERUSER_PASSWORD}
     volumes:
       - certloop-data:/app/data
     depends_on:

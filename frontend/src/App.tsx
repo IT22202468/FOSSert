@@ -517,10 +517,10 @@ export default function App() {
               setView("verify");
             }}
           >
-            <Box sx={{ display: { xs: "none", md: "flex" }, alignItems: "center", gap: 2 }}>
-              <BrandMark variant="horizontal" width={175} size={50} priority />
-              <Divider orientation="vertical" flexItem sx={{ my: 1.5, borderColor: "rgba(0, 0, 0, 0.08)" }} />
-              <BrandMark variant="foss" size={38} priority />
+            <Box sx={{ display: { xs: "none", md: "flex" }, alignItems: "center", gap: 1.5 }}>
+              <BrandMark variant="horizontal" size={38} priority />
+              <Divider orientation="vertical" flexItem sx={{ my: 1.25, borderColor: "rgba(0, 0, 0, 0.12)" }} />
+              <BrandMark variant="foss" size={36} priority />
             </Box>
             <Box sx={{ display: { xs: "flex", md: "none" }, alignItems: "center" }}>
               <BrandMark size={36} priority />

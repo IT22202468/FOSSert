@@ -36,7 +36,7 @@ class Settings(BaseSettings):
     smtp_max_messages_per_connection: int = Field(default=25, ge=1)
     smtp_workers: int = Field(default=1, ge=1, le=1)
     superuser_username: str = "admin"
-    superuser_password: str = "sliitfossadmin"
+    superuser_password: str = ""
     auth_session_hours: int = 72
     auth_required: bool = True
 
