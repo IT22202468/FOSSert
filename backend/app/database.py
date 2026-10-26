@@ -103,6 +103,9 @@ def ensure_schema() -> None:
             "previous_delivery_id": "VARCHAR",
             "generation_error": "TEXT",
             "certificate_revision": "VARCHAR(36)",
+            "is_revoked": "BOOLEAN NOT NULL DEFAULT 0",
+            "revoked_at": "DATETIME",
+            "revocation_reason": "TEXT",
         },
         "delivery_attempts": {
             "reconciliation_action": "VARCHAR(40)",

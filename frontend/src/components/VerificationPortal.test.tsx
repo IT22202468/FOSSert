@@ -68,6 +68,39 @@ describe("VerificationPortal", () => {
       expect(screen.getByText(/No official certificate was found matching ID "INVALID-CODE"/i)).toBeInTheDocument();
     });
   });
+
+  it("displays revoked alert and disables download when certificate is revoked", async () => {
+    vi.spyOn(api, "verifyCertificate").mockResolvedValue({
+      found: true,
+      certificate_code: "FOSS-2026-REVOKED-1",
+      recipient_name: "Wrong Recipient",
+      workshop_name: "React & Cloud Workshop",
+      issuer: "SLIIT FOSS Community",
+      issue_date: "2026-10-26T10:00:00Z",
+      status: "REVOKED",
+      verified: false,
+      is_revoked: true,
+      revoked_at: "2026-10-26T12:00:00Z",
+      revocation_reason: "Issued to wrong recipient by mistake",
+      has_pdf: false,
+      has_preview: false,
+    });
+
+    render(<VerificationPortal />);
+    const input = screen.getByPlaceholderText(/e\.g\. FOSS-2026/i);
+    fireEvent.change(input, { target: { value: "FOSS-2026-REVOKED-1" } });
+
+    const btn = screen.getByRole("button", { name: /verify certificate/i });
+    fireEvent.click(btn);
+
+    await waitFor(() => {
+      expect(screen.getByText("Wrong Recipient")).toBeInTheDocument();
+      expect(screen.getByText(/Certificate Invalidated by Authority/i)).toBeInTheDocument();
+      expect(screen.getByText(/Notice of Certificate Invalidation/i)).toBeInTheDocument();
+      expect(screen.getByText(/Issued to wrong recipient by mistake/i)).toBeInTheDocument();
+      expect(screen.getByText(/Download Disabled \(Revoked\)/i)).toBeInTheDocument();
+    });
+  });
 });
 
 describe("AdminLoginModal", () => {

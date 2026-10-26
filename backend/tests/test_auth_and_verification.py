@@ -139,3 +139,108 @@ def test_public_certificate_verification_and_download(clean_database, tmp_path):
     assert download_resp.status_code == 200
     assert download_resp.headers["content-type"] == "application/pdf"
     assert len(download_resp.content) > 0
+
+
+def test_revoke_and_reactivate_certificate(clean_database, tmp_path):
+    settings = get_settings()
+    settings.auth_required = True
+
+    # 1. Login as admin
+    login_resp = client.post("/api/auth/login", json={
+        "username": settings.superuser_username,
+        "password": settings.superuser_password,
+    })
+    assert login_resp.status_code == 200
+    token = login_resp.json()["token"]
+    headers = {"Authorization": f"Bearer {token}"}
+
+    # 2. Seed batch and participant
+    code = generate_certificate_code()
+    template_path = tmp_path / "cert_template_revoke.png"
+    Image.new("RGB", (800, 600), "white").save(template_path)
+    render_result = render_certificate(
+        template_path=template_path,
+        font_path=resolve_font_path(None),
+        output_dir=tmp_path,
+        participant_id="part-rev-1",
+        name="Wrong Recipient",
+        region={"x": 0.1, "y": 0.4, "w": 0.8, "h": 0.15, "font_size": 36, "min_font_size": 18, "alignment": "center"},
+        certificate_code=code,
+    )
+
+    with SessionLocal() as db:
+        batch = Batch(name="Test Workshop", name_normalized="test workshop")
+        db.add(batch)
+        db.flush()
+        part = Participant(
+            batch_id=batch.id,
+            row_number=1,
+            name="Wrong Recipient",
+            email="wrong@example.com",
+            normalized_email="wrong@example.com",
+            certificate_code=code,
+            certificate_path=str(render_result.pdf_path),
+            preview_path=str(render_result.preview_path),
+            filename="cert.pdf",
+            idempotency_key="part-rev-1-key",
+        )
+        db.add(part)
+        db.commit()
+        batch_id = batch.id
+        part_id = part.id
+
+    # 3. Unauthenticated revoke is rejected
+    unauth_resp = client.post(f"/api/batches/{batch_id}/participants/{part_id}/revoke", json={"reason": "Wrong person"})
+    assert unauth_resp.status_code == 401
+
+    # 4. Authenticated admin revokes the certificate
+    revoke_resp = client.post(
+        f"/api/batches/{batch_id}/participants/{part_id}/revoke",
+        json={"reason": "Issued to wrong person by mistake"},
+        headers=headers,
+    )
+    assert revoke_resp.status_code == 200
+    batch_data = revoke_resp.json()
+    part_data = next(p for p in batch_data["participants"] if p["id"] == part_id)
+    assert part_data["is_revoked"] is True
+    assert part_data["revocation_reason"] == "Issued to wrong person by mistake"
+    assert part_data["revoked_at"] is not None
+
+    # 5. Public verification endpoint reflects revoked status
+    verify_resp = client.get(f"/api/verify/{code}")
+    assert verify_resp.status_code == 200
+    v_data = verify_resp.json()
+    assert v_data["found"] is True
+    assert v_data["verified"] is False
+    assert v_data["is_revoked"] is True
+    assert v_data["status"] == "REVOKED"
+    assert v_data["revocation_reason"] == "Issued to wrong person by mistake"
+    assert v_data["has_pdf"] is False
+    assert v_data["has_preview"] is False
+
+    # 6. Public download of revoked certificate is blocked (HTTP 410)
+    download_revoked = client.get(f"/api/verify/{code}/download")
+    assert download_revoked.status_code == 410
+
+    # 7. Public preview of revoked certificate is blocked (HTTP 410)
+    preview_revoked = client.get(f"/api/verify/{code}/preview")
+    assert preview_revoked.status_code == 410
+
+    # 8. Admin reactivates the certificate
+    reactivate_resp = client.post(
+        f"/api/batches/{batch_id}/participants/{part_id}/reactivate",
+        headers=headers,
+    )
+    assert reactivate_resp.status_code == 200
+    batch_data_after = reactivate_resp.json()
+    part_after = next(p for p in batch_data_after["participants"] if p["id"] == part_id)
+    assert part_after["is_revoked"] is False
+    assert part_after["revocation_reason"] is None
+    assert part_after["revoked_at"] is None
+
+    # 9. Public verification is valid again
+    verify_after = client.get(f"/api/verify/{code}")
+    assert verify_after.status_code == 200
+    assert verify_after.json()["verified"] is True
+    assert verify_after.json()["is_revoked"] is False
+    assert verify_after.json()["has_pdf"] is True

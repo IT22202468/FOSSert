@@ -38,6 +38,9 @@ export interface Participant {
   error_reason: string | null;
   delivery_reference: string;
   certificate_code?: string;
+  is_revoked?: boolean;
+  revoked_at?: string | null;
+  revocation_reason?: string | null;
   previous_delivery: PreviousDelivery | null;
   attempts: DeliveryAttempt[];
 }
@@ -130,6 +133,9 @@ export interface CertificateVerificationResult {
   issue_date: string | null;
   status: string;
   verified: boolean;
+  is_revoked?: boolean;
+  revoked_at?: string | null;
+  revocation_reason?: string | null;
   has_pdf: boolean;
   has_preview: boolean;
 }

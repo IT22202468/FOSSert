@@ -3,6 +3,11 @@ import {
   Button,
   Checkbox,
   Chip,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogContentText,
+  DialogTitle,
   IconButton,
   Link,
   Paper,
@@ -19,6 +24,7 @@ import {
 } from "@mui/material";
 import DownloadIcon from "@mui/icons-material/Download";
 import InfoOutlinedIcon from "@mui/icons-material/InfoOutlined";
+import BlockRoundedIcon from "@mui/icons-material/BlockRounded";
 import { getAdminToken } from "../api";
 import type { Participant, Status } from "../types";
 
@@ -188,6 +194,8 @@ export default function ParticipantTable({
   rows,
   onPatch,
   onReconcile,
+  onRevoke,
+  onReactivate,
 }: {
   rows: Participant[];
   onPatch?: (id: string, data: Record<string, unknown>) => Promise<void>;
@@ -195,8 +203,17 @@ export default function ParticipantTable({
     id: string,
     action: "CONFIRM_SENT" | "CONFIRM_NOT_SENT",
   ) => void;
+  onRevoke?: (id: string, reason?: string) => Promise<void>;
+  onReactivate?: (id: string) => Promise<void>;
 }) {
+  const [revokeTarget, setRevokeTarget] = useState<Participant | null>(null);
+  const [revokeReason, setRevokeReason] = useState("");
+  const [revoking, setRevoking] = useState(false);
+
+  const [reactivateTarget, setReactivateTarget] = useState<Participant | null>(null);
+  const [reactivating, setReactivating] = useState(false);
   return (
+    <>
     <TableContainer
       component={Paper}
       variant="outlined"
@@ -307,15 +324,43 @@ export default function ParticipantTable({
                 )}
               </TableCell>
               <TableCell>
-                <Chip
-                  size="small"
-                  color={color[participant.status]}
-                  label={participant.status}
-                />
-                {participant.error_reason && (
-                  <Tooltip title={participant.error_reason}>
-                    <InfoOutlinedIcon sx={{ fontSize: 16, ml: 0.5, verticalAlign: "middle", color: "text.secondary", cursor: "help" }} />
-                  </Tooltip>
+                {participant.is_revoked ? (
+                  <Stack direction="row" spacing={0.5} alignItems="center">
+                    <Tooltip title={participant.revocation_reason ? `Revocation Reason: ${participant.revocation_reason}` : "Certificate revoked"}>
+                      <Chip
+                        size="small"
+                        color="error"
+                        label="REVOKED"
+                        sx={{ fontWeight: 800, fontSize: "11px", letterSpacing: "0.05em" }}
+                      />
+                    </Tooltip>
+                    {onReactivate && (
+                      <Tooltip title="Restore / Reactivate Certificate">
+                        <Button
+                          size="small"
+                          color="success"
+                          variant="outlined"
+                          onClick={() => setReactivateTarget(participant)}
+                          sx={{ minWidth: 0, px: 1, py: 0.1, fontSize: "11px", borderRadius: "9999px" }}
+                        >
+                          Restore
+                        </Button>
+                      </Tooltip>
+                    )}
+                  </Stack>
+                ) : (
+                  <>
+                    <Chip
+                      size="small"
+                      color={color[participant.status]}
+                      label={participant.status}
+                    />
+                    {participant.error_reason && (
+                      <Tooltip title={participant.error_reason}>
+                        <InfoOutlinedIcon sx={{ fontSize: 16, ml: 0.5, verticalAlign: "middle", color: "text.secondary", cursor: "help" }} />
+                      </Tooltip>
+                    )}
+                  </>
                 )}
               </TableCell>
               <TableCell sx={{ whiteSpace: "nowrap" }}>
@@ -370,25 +415,167 @@ export default function ParticipantTable({
                 </TableCell>
               )}
               <TableCell align="right">
-                {participant.filename && participant.certificate_current && (
-                  <IconButton
-                    aria-label={`Download ${participant.name}`}
-                    component="a"
-                    href={`/api/participants/${participant.id}/certificate${getAdminToken() ? `?token=${encodeURIComponent(getAdminToken()!)}` : ""}`}
-                  >
-                    <DownloadIcon />
-                  </IconButton>
-                )}
-                {participant.filename && !participant.certificate_current && (
-                  <Tooltip title="Certificate styling changed; regenerate it">
-                    <Chip size="small" color="warning" label="Outdated" />
-                  </Tooltip>
-                )}
+                <Stack direction="row" spacing={0.5} justifyContent="flex-end" alignItems="center">
+                  {onRevoke && !participant.is_revoked && (participant.status === "SENT" || participant.filename || participant.certificate_code) && (
+                    <Tooltip title="Invalidate / Revoke Certificate">
+                      <IconButton
+                        size="small"
+                        color="error"
+                        aria-label={`Revoke certificate for ${participant.name}`}
+                        onClick={() => {
+                          setRevokeTarget(participant);
+                          setRevokeReason("Issued to incorrect recipient");
+                        }}
+                      >
+                        <BlockRoundedIcon fontSize="small" />
+                      </IconButton>
+                    </Tooltip>
+                  )}
+                  {participant.filename && participant.certificate_current && !participant.is_revoked && (
+                    <IconButton
+                      aria-label={`Download ${participant.name}`}
+                      component="a"
+                      href={`/api/participants/${participant.id}/certificate${getAdminToken() ? `?token=${encodeURIComponent(getAdminToken()!)}` : ""}`}
+                    >
+                      <DownloadIcon />
+                    </IconButton>
+                  )}
+                  {participant.is_revoked && (
+                    <Tooltip title="Download blocked: Certificate has been revoked">
+                      <Chip size="small" variant="outlined" color="error" label="Blocked" sx={{ height: 24, fontSize: "10px" }} />
+                    </Tooltip>
+                  )}
+                  {participant.filename && !participant.certificate_current && !participant.is_revoked && (
+                    <Tooltip title="Certificate styling changed; regenerate it">
+                      <Chip size="small" color="warning" label="Outdated" />
+                    </Tooltip>
+                  )}
+                </Stack>
               </TableCell>
             </TableRow>
           ))}
         </TableBody>
       </Table>
     </TableContainer>
+
+    {/* Revocation Confirmation Dialog */}
+    <Dialog
+      open={Boolean(revokeTarget)}
+      onClose={() => !revoking && setRevokeTarget(null)}
+      maxWidth="sm"
+      fullWidth
+      slotProps={{ paper: { sx: { borderRadius: "21.6px", p: 1 } } }}
+    >
+      <DialogTitle sx={{ fontWeight: 800, color: "#991b1b" }}>
+        Invalidate / Revoke Certificate
+      </DialogTitle>
+      <DialogContent>
+        <DialogContentText sx={{ color: "#111111", mb: 1.5, fontWeight: 500 }}>
+          Are you sure you want to invalidate the certificate for{" "}
+          <strong>{revokeTarget?.name}</strong>
+          {revokeTarget?.certificate_code && (
+            <>
+              {" "}(<code>{revokeTarget.certificate_code}</code>)
+            </>
+          )}?
+        </DialogContentText>
+        <DialogContentText sx={{ color: "#777777", fontSize: "0.875rem", mb: 2 }}>
+          Anyone attempting to verify this certificate on the public verification portal will see that it has been officially invalidated by the SLIIT FOSS Community authority. Direct PDF downloads will be blocked.
+        </DialogContentText>
+        <TextField
+          autoFocus
+          fullWidth
+          size="small"
+          label="Revocation Reason"
+          value={revokeReason}
+          onChange={(e) => setRevokeReason(e.target.value)}
+          placeholder="e.g. Issued to incorrect recipient / clerical mistake"
+          disabled={revoking}
+          sx={{ mt: 1 }}
+        />
+      </DialogContent>
+      <DialogActions sx={{ px: 3, pb: 2 }}>
+        <Button
+          onClick={() => setRevokeTarget(null)}
+          disabled={revoking}
+          sx={{ borderRadius: "9999px", color: "#777777" }}
+        >
+          Cancel
+        </Button>
+        <Button
+          variant="contained"
+          color="error"
+          disabled={revoking}
+          onClick={async () => {
+            if (!revokeTarget || !onRevoke) return;
+            setRevoking(true);
+            try {
+              await onRevoke(revokeTarget.id, revokeReason.trim() || undefined);
+              setRevokeTarget(null);
+            } finally {
+              setRevoking(false);
+            }
+          }}
+          sx={{ borderRadius: "9999px", px: 2.5 }}
+        >
+          {revoking ? "Revoking…" : "Invalidate Certificate"}
+        </Button>
+      </DialogActions>
+    </Dialog>
+
+    {/* Reactivate Confirmation Dialog */}
+    <Dialog
+      open={Boolean(reactivateTarget)}
+      onClose={() => !reactivating && setReactivateTarget(null)}
+      maxWidth="sm"
+      fullWidth
+      slotProps={{ paper: { sx: { borderRadius: "21.6px", p: 1 } } }}
+    >
+      <DialogTitle sx={{ fontWeight: 800, color: "#111111" }}>
+        Reactivate Certificate
+      </DialogTitle>
+      <DialogContent>
+        <DialogContentText sx={{ color: "#111111", mb: 1, fontWeight: 500 }}>
+          Are you sure you want to restore validity for{" "}
+          <strong>{reactivateTarget?.name}</strong>
+          {reactivateTarget?.certificate_code && (
+            <>
+              {" "}(<code>{reactivateTarget.certificate_code}</code>)
+            </>
+          )}?
+        </DialogContentText>
+        <DialogContentText sx={{ color: "#777777", fontSize: "0.875rem" }}>
+          This will clear the revoked status and restore the certificate as an authentic, downloadable credential on the public verification registry.
+        </DialogContentText>
+      </DialogContent>
+      <DialogActions sx={{ px: 3, pb: 2 }}>
+        <Button
+          onClick={() => setReactivateTarget(null)}
+          disabled={reactivating}
+          sx={{ borderRadius: "9999px", color: "#777777" }}
+        >
+          Cancel
+        </Button>
+        <Button
+          variant="contained"
+          color="success"
+          disabled={reactivating}
+          onClick={async () => {
+            if (!reactivateTarget || !onReactivate) return;
+            setReactivating(true);
+            try {
+              await onReactivate(reactivateTarget.id);
+              setReactivateTarget(null);
+            } finally {
+              setReactivating(false);
+            }
+          }}
+          sx={{ borderRadius: "9999px", px: 2.5 }}
+        >
+          {reactivating ? "Restoring…" : "Reactivate Certificate"}
+        </Button>
+      </DialogActions>
+    </Dialog>
+    </>
   );
 }

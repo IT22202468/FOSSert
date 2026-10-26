@@ -69,6 +69,9 @@ class ParticipantOut(BaseModel):
     sent_at: datetime | None
     updated_at: datetime | None
     error_reason: str | None
+    is_revoked: bool = False
+    revoked_at: datetime | None = None
+    revocation_reason: str | None = None
     model_config = {"from_attributes": True}
 
 
@@ -103,5 +106,9 @@ class ReconcileRequest(BaseModel):
 class LoginRequest(BaseModel):
     username: str
     password: str
+
+
+class RevokeCertificateRequest(BaseModel):
+    reason: str | None = Field(default=None, max_length=1000)
 
 

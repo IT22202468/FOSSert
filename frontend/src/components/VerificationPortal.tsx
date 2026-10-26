@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from "react";
+import BlockRoundedIcon from "@mui/icons-material/BlockRounded";
 import CloseRoundedIcon from "@mui/icons-material/CloseRounded";
 import WarningAmberRoundedIcon from "@mui/icons-material/WarningAmberRounded";
 import CheckRoundedIcon from "@mui/icons-material/CheckRounded";
@@ -201,15 +202,19 @@ export const VerificationPortal: React.FC = () => {
         </div>
       )}
 
-      {/* Verified Certificate Card */}
+      {/* Verified / Revoked Certificate Card */}
       {result && result.found && (
         <div
           style={{
             backgroundColor: "#ffffff",
-            border: "1px solid rgba(22, 163, 74, 0.25)",
+            border: result.is_revoked
+              ? "1.5px solid rgba(220, 38, 38, 0.35)"
+              : "1px solid rgba(22, 163, 74, 0.25)",
             borderRadius: "21.6px",
             padding: "2rem",
-            boxShadow: "0 8px 30px rgba(22, 163, 74, 0.08), 0 2px 8px rgba(0, 0, 0, 0.03)",
+            boxShadow: result.is_revoked
+              ? "0 8px 30px rgba(220, 38, 38, 0.08), 0 2px 8px rgba(0, 0, 0, 0.03)"
+              : "0 8px 30px rgba(22, 163, 74, 0.08), 0 2px 8px rgba(0, 0, 0, 0.03)",
             marginBottom: "2rem",
             position: "relative",
             overflow: "hidden",
@@ -234,22 +239,38 @@ export const VerificationPortal: React.FC = () => {
                   width: "38px",
                   height: "38px",
                   borderRadius: "50%",
-                  backgroundColor: "#f0fdf4",
-                  border: "2px solid #16a34a",
+                  backgroundColor: result.is_revoked ? "#fef2f2" : "#f0fdf4",
+                  border: result.is_revoked ? "2px solid #dc2626" : "2px solid #16a34a",
                   display: "flex",
                   alignItems: "center",
                   justifyContent: "center",
-                  color: "#16a34a",
+                  color: result.is_revoked ? "#dc2626" : "#16a34a",
                 }}
               >
-                <CheckRoundedIcon sx={{ fontSize: 22, color: "#16a34a" }} />
+                {result.is_revoked ? (
+                  <BlockRoundedIcon sx={{ fontSize: 22, color: "#dc2626" }} />
+                ) : (
+                  <CheckRoundedIcon sx={{ fontSize: 22, color: "#16a34a" }} />
+                )}
               </div>
               <div>
-                <span style={{ fontSize: "0.75rem", textTransform: "uppercase", letterSpacing: "0.08em", color: "#16a34a", fontWeight: 700 }}>
-                  Official Record Verified
+                <span
+                  style={{
+                    fontSize: "0.75rem",
+                    textTransform: "uppercase",
+                    letterSpacing: "0.08em",
+                    color: result.is_revoked ? "#dc2626" : "#16a34a",
+                    fontWeight: 800,
+                  }}
+                >
+                  {result.is_revoked
+                    ? "Official Record: Revoked & Invalidated"
+                    : "Official Record Verified"}
                 </span>
-                <h2 style={{ fontSize: "1.25rem", margin: 0, color: "#111111", fontWeight: 700 }}>
-                  Authentic Certificate of Participation
+                <h2 style={{ fontSize: "1.25rem", margin: 0, color: result.is_revoked ? "#991b1b" : "#111111", fontWeight: 700 }}>
+                  {result.is_revoked
+                    ? "Certificate Invalidated by Authority"
+                    : "Authentic Certificate of Participation"}
                 </h2>
               </div>
             </div>
@@ -290,6 +311,43 @@ export const VerificationPortal: React.FC = () => {
               </button>
             </div>
           </div>
+
+          {/* Revocation Warning Alert if Revoked */}
+          {result.is_revoked && (
+            <div
+              style={{
+                padding: "1.1rem 1.4rem",
+                backgroundColor: "#fef2f2",
+                border: "1px solid #fee2e2",
+                borderRadius: "16px",
+                marginBottom: "1.75rem",
+                color: "#991b1b",
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: "8px", fontWeight: 700, fontSize: "1rem", marginBottom: "0.35rem" }}>
+                <BlockRoundedIcon sx={{ fontSize: 20, color: "#dc2626" }} />
+                <span>Notice of Certificate Invalidation</span>
+              </div>
+              <p style={{ margin: "0 0 0.5rem", fontSize: "0.925rem", color: "#b91c1c", lineHeight: 1.5 }}>
+                This certificate was officially invalidated by the SLIIT FOSS Community authority and is no longer recognized as an authentic credential.
+              </p>
+              {result.revocation_reason && (
+                <div style={{ fontSize: "0.9rem", color: "#7f1d1d", marginBottom: "0.25rem" }}>
+                  <strong>Revocation Reason:</strong> {result.revocation_reason}
+                </div>
+              )}
+              {result.revoked_at && (
+                <div style={{ fontSize: "0.825rem", color: "#991b1b" }}>
+                  <strong>Invalidated on:</strong>{" "}
+                  {new Date(result.revoked_at).toLocaleDateString(undefined, {
+                    year: "numeric",
+                    month: "long",
+                    day: "numeric",
+                  })}
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Details Grid */}
           <div
@@ -363,29 +421,57 @@ export const VerificationPortal: React.FC = () => {
           )}
 
           {/* Action Bar / Download */}
-          <div style={{ display: "flex", gap: "1rem", flexWrap: "wrap", justifyContent: "flex-end" }}>
-            {result.has_pdf && (
-              <a
-                href={`/api/verify/${encodeURIComponent(result.certificate_code)}/download`}
-                download
-                style={{
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: "8px",
-                  padding: "0.8rem 1.8rem",
-                  borderRadius: "9999px",
-                  backgroundColor: "#dc2626",
-                  color: "#ffffff",
-                  textDecoration: "none",
-                  fontWeight: 600,
-                  fontSize: "0.95rem",
-                  boxShadow: "0 4px 14px rgba(220, 38, 38, 0.25)",
-                  transition: "all 150ms ease",
-                }}
-              >
-                <DownloadRoundedIcon sx={{ fontSize: 19 }} />
-                <span>Download Official PDF</span>
-              </a>
+          <div style={{ display: "flex", gap: "1rem", flexWrap: "wrap", justifyContent: result.is_revoked ? "space-between" : "flex-end", alignItems: "center" }}>
+            {result.is_revoked ? (
+              <>
+                <span style={{ fontSize: "0.85rem", color: "#991b1b", fontWeight: 600 }}>
+                  Direct PDF downloads are permanently disabled for invalidated credentials.
+                </span>
+                <button
+                  type="button"
+                  disabled
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: "8px",
+                    padding: "0.8rem 1.8rem",
+                    borderRadius: "9999px",
+                    backgroundColor: "#f4f4f5",
+                    color: "#a1a1aa",
+                    border: "1px solid #e4e4e7",
+                    cursor: "not-allowed",
+                    fontWeight: 600,
+                    fontSize: "0.95rem",
+                  }}
+                >
+                  <BlockRoundedIcon sx={{ fontSize: 18 }} />
+                  <span>Download Disabled (Revoked)</span>
+                </button>
+              </>
+            ) : (
+              result.has_pdf && (
+                <a
+                  href={`/api/verify/${encodeURIComponent(result.certificate_code)}/download`}
+                  download
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: "8px",
+                    padding: "0.8rem 1.8rem",
+                    borderRadius: "9999px",
+                    backgroundColor: "#dc2626",
+                    color: "#ffffff",
+                    textDecoration: "none",
+                    fontWeight: 600,
+                    fontSize: "0.95rem",
+                    boxShadow: "0 4px 14px rgba(220, 38, 38, 0.25)",
+                    transition: "all 150ms ease",
+                  }}
+                >
+                  <DownloadRoundedIcon sx={{ fontSize: 19 }} />
+                  <span>Download Official PDF</span>
+                </a>
+              )
             )}
           </div>
         </div>

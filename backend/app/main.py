@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 from .config import get_settings
 from .database import Base, SessionLocal, clean_session_name, engine, ensure_schema, get_db, normalized_session_name
 from .models import AdminSession, AdminUser, Batch, DEFAULT_EMAIL_BODY, DEFAULT_EMAIL_SUBJECT, DeliveryAttempt, DeliveryStatus, Participant, SendRecord
-from .schemas import BatchCreate, EmailConfig, LoginRequest, ParticipantPatch, PreviewRequest, ReconcileRequest, RegionUpdate, StartSendRequest
+from .schemas import BatchCreate, EmailConfig, LoginRequest, ParticipantPatch, PreviewRequest, ReconcileRequest, RegionUpdate, RevokeCertificateRequest, StartSendRequest
 from .services.auth import create_admin_session, get_current_admin, get_optional_admin, revoke_admin_session, security, verify_password
 from .services.codes import generate_certificate_code
 from .services.csv_import import csv_safe, parse_participants, resolve_columns, validate_participant
@@ -187,7 +187,7 @@ def serialize_batch(batch: Batch, include_participants: bool = True) -> dict:
             "started_at": started_at.isoformat() if started_at else None,
             "finished_at": finished_at.isoformat() if finished_at else None,
         },
-        "participants": [{"id": p.id, "certificate_code": p.certificate_code, "row_number": p.row_number, "name": p.name, "email": p.email, "is_valid": p.is_valid, "is_excluded": p.is_excluded, "validation_error": p.validation_error, "status": p.status.value, "filename": p.filename, "certificate_current": current[p.id], "legibility_warning": p.legibility_warning, "generation_error": p.generation_error, "smtp_message_id": p.smtp_message_id, "sent_at": p.sent_at.isoformat() if p.sent_at else None, "updated_at": p.updated_at.isoformat() if p.updated_at else None, "error_reason": p.error_reason, "delivery_reference": p.idempotency_key, "previous_delivery": ({"participant_id": p.previous_delivery_id, "name": participant_by_id[p.previous_delivery_id].name, "email": participant_by_id[p.previous_delivery_id].email, "sent_at": participant_by_id[p.previous_delivery_id].sent_at.isoformat() if participant_by_id[p.previous_delivery_id].sent_at else None, "smtp_message_id": participant_by_id[p.previous_delivery_id].smtp_message_id, "filename": participant_by_id[p.previous_delivery_id].filename} if p.previous_delivery_id and p.previous_delivery_id in participant_by_id else None), "attempts": [{"attempt_number": a.attempt_number, "started_at": a.started_at.isoformat() if a.started_at else None, "finished_at": a.finished_at.isoformat() if a.finished_at else None, "outcome": a.outcome, "error_code": a.error_code, "error_reason": a.error_reason, "reconciliation_action": a.reconciliation_action, "reconciliation_note": a.reconciliation_note, "reconciled_at": a.reconciled_at.isoformat() if a.reconciled_at else None, "certificate_filename": a.certificate_filename} for a in sorted(p.attempts, key=lambda item: item.attempt_number, reverse=True)]} for p in sorted(imported, key=lambda item: item.row_number)] if include_participants else [],
+        "participants": [{"id": p.id, "certificate_code": p.certificate_code, "row_number": p.row_number, "name": p.name, "email": p.email, "is_valid": p.is_valid, "is_excluded": p.is_excluded, "is_revoked": p.is_revoked, "revoked_at": p.revoked_at.isoformat() if p.revoked_at else None, "revocation_reason": p.revocation_reason, "validation_error": p.validation_error, "status": p.status.value, "filename": p.filename, "certificate_current": current[p.id], "legibility_warning": p.legibility_warning, "generation_error": p.generation_error, "smtp_message_id": p.smtp_message_id, "sent_at": p.sent_at.isoformat() if p.sent_at else None, "updated_at": p.updated_at.isoformat() if p.updated_at else None, "error_reason": p.error_reason, "delivery_reference": p.idempotency_key, "previous_delivery": ({"participant_id": p.previous_delivery_id, "name": participant_by_id[p.previous_delivery_id].name, "email": participant_by_id[p.previous_delivery_id].email, "sent_at": participant_by_id[p.previous_delivery_id].sent_at.isoformat() if participant_by_id[p.previous_delivery_id].sent_at else None, "smtp_message_id": participant_by_id[p.previous_delivery_id].smtp_message_id, "filename": participant_by_id[p.previous_delivery_id].filename} if p.previous_delivery_id and p.previous_delivery_id in participant_by_id else None), "attempts": [{"attempt_number": a.attempt_number, "started_at": a.started_at.isoformat() if a.started_at else None, "finished_at": a.finished_at.isoformat() if a.finished_at else None, "outcome": a.outcome, "error_code": a.error_code, "error_reason": a.error_reason, "reconciliation_action": a.reconciliation_action, "reconciliation_note": a.reconciliation_note, "reconciled_at": a.reconciled_at.isoformat() if a.reconciled_at else None, "certificate_filename": a.certificate_filename} for a in sorted(p.attempts, key=lambda item: item.attempt_number, reverse=True)]} for p in sorted(imported, key=lambda item: item.row_number)] if include_participants else [],
     }
 
 
@@ -242,10 +242,13 @@ def verify_certificate(certificate_code: str, db: Session = Depends(get_db)):
         "workshop_name": participant.batch.name if participant.batch else "SLIIT FOSS Workshop",
         "issuer": "SLIIT FOSS Community",
         "issue_date": issue_date.isoformat() if issue_date else None,
-        "status": "ISSUED" if participant.status == DeliveryStatus.SENT else ("GENERATED" if participant.filename else participant.status.value),
-        "verified": True,
-        "has_pdf": has_pdf,
-        "has_preview": has_preview,
+        "status": "REVOKED" if participant.is_revoked else ("ISSUED" if participant.status == DeliveryStatus.SENT else ("GENERATED" if participant.filename else participant.status.value)),
+        "verified": not participant.is_revoked,
+        "is_revoked": bool(participant.is_revoked),
+        "revoked_at": participant.revoked_at.isoformat() if participant.revoked_at else None,
+        "revocation_reason": participant.revocation_reason if participant.is_revoked else None,
+        "has_pdf": has_pdf and not participant.is_revoked,
+        "has_preview": has_preview and not participant.is_revoked,
     }
 
 
@@ -255,6 +258,8 @@ def verify_preview(certificate_code: str, db: Session = Depends(get_db)):
     participant = db.scalars(select(Participant).where(func.lower(Participant.certificate_code) == clean_code.lower())).first()
     if not participant or not participant.preview_path or not Path(participant.preview_path).exists():
         raise HTTPException(404, "Certificate preview not available")
+    if participant.is_revoked:
+        raise HTTPException(410, "This certificate has been revoked and preview is unavailable")
     return FileResponse(participant.preview_path, media_type="image/png")
 
 
@@ -264,6 +269,8 @@ def verify_download(certificate_code: str, db: Session = Depends(get_db)):
     participant = db.scalars(select(Participant).where(func.lower(Participant.certificate_code) == clean_code.lower())).first()
     if not participant or not participant.certificate_path or not Path(participant.certificate_path).exists():
         raise HTTPException(404, "Certificate PDF not available")
+    if participant.is_revoked:
+        raise HTTPException(410, "This certificate has been revoked by the issuing authority and cannot be downloaded")
     return FileResponse(
         participant.certificate_path,
         media_type="application/pdf",
@@ -480,6 +487,40 @@ def reconcile_uncertain(participant_id: str, payload: ReconcileRequest, db: Sess
             # outcome was indeterminate even after operator reconciliation.
             record.counts_against_limit = True
             record.error_reason = "Manually reconciled as not sent"
+    db.commit()
+    db.refresh(participant)
+    return serialize_batch(participant.batch)
+
+
+@app.post("/api/batches/{batch_id}/participants/{participant_id}/revoke", dependencies=[Depends(get_current_admin)])
+@app.post("/api/participants/{participant_id}/revoke", dependencies=[Depends(get_current_admin)])
+def revoke_certificate(participant_id: str, payload: RevokeCertificateRequest | None = None, batch_id: str | None = None, db: Session = Depends(get_db)):
+    participant = db.get(Participant, participant_id)
+    if not participant:
+        raise HTTPException(404, "Participant not found")
+    if batch_id and participant.batch_id != batch_id:
+        raise HTTPException(404, "Participant not in specified batch")
+
+    participant.is_revoked = True
+    participant.revoked_at = datetime.now(timezone.utc)
+    participant.revocation_reason = (payload.reason.strip() if payload and payload.reason and payload.reason.strip() else "Revoked by issuing authority")
+    db.commit()
+    db.refresh(participant)
+    return serialize_batch(participant.batch)
+
+
+@app.post("/api/batches/{batch_id}/participants/{participant_id}/reactivate", dependencies=[Depends(get_current_admin)])
+@app.post("/api/participants/{participant_id}/reactivate", dependencies=[Depends(get_current_admin)])
+def reactivate_certificate(participant_id: str, batch_id: str | None = None, db: Session = Depends(get_db)):
+    participant = db.get(Participant, participant_id)
+    if not participant:
+        raise HTTPException(404, "Participant not found")
+    if batch_id and participant.batch_id != batch_id:
+        raise HTTPException(404, "Participant not in specified batch")
+
+    participant.is_revoked = False
+    participant.revoked_at = None
+    participant.revocation_reason = None
     db.commit()
     db.refresh(participant)
     return serialize_batch(participant.batch)

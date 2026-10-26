@@ -1072,6 +1072,24 @@ export default function App() {
         },
       );
   };
+  const handleRevokeParticipant = async (id: string, reason?: string) => {
+    await run(
+      () => api.revokeCertificate(batch.id, id, reason),
+      (b) => {
+        setB(b);
+        setNotice("Certificate has been invalidated.");
+      },
+    );
+  };
+  const handleReactivateParticipant = async (id: string) => {
+    await run(
+      () => api.reactivateCertificate(batch.id, id),
+      (b) => {
+        setB(b);
+        setNotice("Certificate validity restored.");
+      },
+    );
+  };
   const emailPreviewName =
     batch.participants.find(
       (participant) => participant.is_valid && !participant.is_excluded,
@@ -1765,7 +1783,12 @@ export default function App() {
           )}
         </Select>
       </Stack>
-      <ParticipantTable rows={shown} onReconcile={reconcile} />
+      <ParticipantTable
+        rows={shown}
+        onReconcile={reconcile}
+        onRevoke={handleRevokeParticipant}
+        onReactivate={handleReactivateParticipant}
+      />
     </Stack>,
   ];
   return (

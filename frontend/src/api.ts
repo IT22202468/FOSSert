@@ -186,6 +186,16 @@ export const api = {
           action === "CONFIRM_SENT" ? "CONFIRM SENT" : "CONFIRM NOT SENT",
       }),
     ),
+  revokeCertificate: (batchId: string, participantId: string, reason?: string) =>
+    request<Batch>(
+      `/batches/${batchId}/participants/${participantId}/revoke`,
+      json("POST", { reason }),
+    ),
+  reactivateCertificate: (batchId: string, participantId: string) =>
+    request<Batch>(
+      `/batches/${batchId}/participants/${participantId}/reactivate`,
+      json("POST", {}),
+    ),
   action: (id: string, action: "pause" | "resume" | "retry-failed") =>
     request(`/batches/${id}/${action}`, { method: "POST" }),
   login: async (username: string, password: string) => {
